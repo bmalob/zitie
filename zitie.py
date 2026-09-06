@@ -45,7 +45,68 @@ MM_TO_EMU = 36000.0
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FONTS_DIR = os.path.join(HERE, "fonts")
-USER_FONT_DIR = os.path.expanduser("~/Library/Fonts")
+if os.name == "nt":        # Windows：用户字体目录
+    USER_FONT_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+                                 "Microsoft", "Windows", "Fonts")
+elif sys.platform == "darwin":
+    USER_FONT_DIR = os.path.expanduser("~/Library/Fonts")
+else:                      # Linux
+    USER_FONT_DIR = os.path.expanduser("~/.local/share/fonts")
+
+
+def load_env():
+    """读取 .env 配置（可用环境变量 ZITIE_ENV 指定路径；否则找当前目录再找脚本目录）。
+    返回 {ZITIE_XXX: 值} 字典，不依赖第三方库。"""
+    candidates = []
+    if os.environ.get("ZITIE_ENV"):
+        candidates.append(os.path.expanduser(os.environ["ZITIE_ENV"]))
+    candidates.append(os.path.join(os.getcwd(), ".env"))
+    candidates.append(os.path.join(HERE, ".env"))
+    cfg = {}
+    for path in candidates:
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    cfg[key.strip()] = val.strip().strip('"').strip("'")
+            break
+    return cfg
+
+
+def env_bool(cfg, key, default=False):
+    v = cfg.get(key)
+    return default if v is None else v.lower() in ("1", "true", "yes", "y", "on", "是")
+
+
+def env_float(cfg, key, default):
+    try:
+        return float(cfg[key])
+    except (KeyError, ValueError):
+        return default
+
+
+def find_soffice():
+    """定位 LibreOffice：优先 .env 的 ZITIE_SOFFICE，再 PATH，再常见安装路径。"""
+    p = load_env().get("ZITIE_SOFFICE")
+    if p:
+        p = os.path.expanduser(p)
+        if os.path.isfile(p):
+            return p
+    found = shutil.which("soffice")
+    if found:
+        return found
+    for cand in (
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        "/usr/bin/soffice",
+    ):
+        if os.path.isfile(cand):
+            return cand
+    return None
 
 # 内容处理用到的正则 / 标点
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
@@ -472,7 +533,7 @@ def export_pdf(docx_path, outdir, font_path=None):
         print(f"🧾 已用 Microsoft Word 导出可直接打印的 PDF：{pdf_abs}")
         return
 
-    soffice = shutil.which("soffice")
+    soffice = find_soffice()
     if not soffice:
         print("⚠️  未找到 Word/soffice，跳过 PDF 导出（docx 已生成）。")
         return
@@ -939,6 +1000,24 @@ def main():
     ap.add_argument("--keep-punct", action="store_true", help="标点也占格")
     ap.add_argument("--grid-color", default="#000000")
     ap.add_argument("--guide-color", default="#A6A6A6")
+    # .env 配置作为默认值（命令行显式参数仍优先）
+    global FONTS_DIR
+    env = load_env()
+    if env.get("ZITIE_FONTS_DIR"):
+        d = os.path.expanduser(env["ZITIE_FONTS_DIR"])
+        FONTS_DIR = d if os.path.isabs(d) else os.path.join(os.getcwd(), d)
+    ap.set_defaults(
+        font=env.get("ZITIE_FONT", "stkaiti"),
+        title=(env.get("ZITIE_TITLE") or None),
+        order=env.get("ZITIE_ORDER", "vertical"),
+        paper=env.get("ZITIE_PAPER", "A4"),
+        grid_style=env.get("ZITIE_GRID_STYLE", "mizi"),
+        output=env.get("ZITIE_OUTPUT", "字帖.docx"),
+        cell=env_float(env, "ZITIE_CELL", 15.0),
+        margin=env_float(env, "ZITIE_MARGIN", 14.0),
+        char_scale=env_float(env, "ZITIE_CHAR_SCALE", 0.80),
+        pdf=env_bool(env, "ZITIE_PDF", False),
+    )
     args = ap.parse_args()
 
     if args.list_fonts:

@@ -17,3 +17,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# 本地配置（含本机路径/偏好，不入库；配置模板见 .env.example）
+.env

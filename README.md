@@ -27,6 +27,15 @@ pip install -r requirements.txt   # 只依赖 python-docx
 
 可选（仅 `--pdf` 时需要）：Microsoft Word 或 LibreOffice（macOS：`brew install --cask libreoffice`）。
 
+### Windows 用户（免命令行）
+
+1. 安装 [Python 3.9+](https://www.python.org/downloads/)，安装时**勾选 “Add Python to PATH”**
+2. （可选，导出 PDF 用）安装 [LibreOffice](https://zh-cn.libreoffice.org/download/) 或用 Word
+3. 双击 **`zitie.bat`**：首次会自动装依赖、生成 `.env` 配置，然后按配置生成 `content.txt` 的字帖
+4. 之后换内容：把要练的字写进 `content.txt` 再双击；或**把任意 `.txt` 拖到 `zitie.bat` 上**
+
+想改字体 / 标题 / 排版，用记事本打开 `.env` 修改即可（见下文配置说明）。
+
 ## 快速开始
 
 ```bash
@@ -44,6 +53,34 @@ python3 zitie.py "床前明月光"             # 内容也可以直接写在命�
 python3 zitie.py content.txt --font wenkai --title "早发白帝城·李白" \
     --order horizontal --pdf
 ```
+
+## 配置文件 `.env`（推荐）
+
+不想每次敲一长串参数，可以把常用设置写进 `.env`，一次配好反复用：
+
+```bash
+cp .env.example .env        # macOS / Linux
+copy .env.example .env      # Windows
+```
+
+然后用记事本 / 编辑器打开 `.env` 修改。可配置项（命令行参数会覆盖这里的值）：
+
+| 配置项 | 含义 | 示例 |
+| --- | --- | --- |
+| `ZITIE_FONT` | 字体：`stkaiti` / `kaiti` / `wenkai`，或 `fonts/` 里的字体名关键词 | `wenkai` |
+| `ZITIE_TITLE` | 标题（横排写在第一行居中；留空不要标题） | `观沧海·汉曹操` |
+| `ZITIE_ORDER` | 排版：`horizontal` 横排 / `vertical` 竖排 | `horizontal` |
+| `ZITIE_PAPER` | 纸张：`A4` / `A5` / `B5` | `A4` |
+| `ZITIE_GRID_STYLE` | 格子：`mizi` 米字格 / `tian` 田字格 / `box` 方框 | `mizi` |
+| `ZITIE_CELL` | 格子边长 mm（默认 15） | `15` |
+| `ZITIE_MARGIN` | 页边距 mm | `14` |
+| `ZITIE_CHAR_SCALE` | 字占格比例 0~1 | `0.85` |
+| `ZITIE_PDF` | 是否同时导出 PDF：`true` / `false` | `true` |
+| `ZITIE_OUTPUT` | 输出文件名 | `字帖.docx` |
+| `ZITIE_FONTS_DIR` | 自定义字体目录（默认脚本下 `fonts/`） | `fonts` |
+| `ZITIE_SOFFICE` | LibreOffice 路径（自动检测不到时手动指定） | `C:\Program Files\LibreOffice\program\soffice.exe` |
+
+> `.env` 只保存在你本机，已被 `.gitignore` 忽略，不会上传；模板见 `.env.example`。
 
 ## 内容规则
 
