@@ -28,14 +28,21 @@ pip install -r requirements.txt   # 只依赖 python-docx
 
 可选（仅 `--pdf` 时需要）：Microsoft Word 或 LibreOffice（macOS：`brew install --cask libreoffice`）。
 
-### Windows 用户（免命令行）
+### 一键脚本（推荐，三平台通用）
 
-1. 安装 [Python 3.9+](https://www.python.org/downloads/)，安装时**勾选 “Add Python to PATH”**
-2. （可选，导出 PDF 用）安装 [LibreOffice](https://zh-cn.libreoffice.org/download/) 或用 Word
-3. 双击 **`zitie.bat`**：首次会自动装依赖、生成 `.env` 配置，然后按配置生成 `content.txt` 的字帖
-4. 之后换内容：把要练的字写进 `content.txt` 再双击；或**把任意 `.txt` 拖到 `zitie.bat` 上**
+脚本会自动装依赖、首次生成 `.env` 配置，然后按配置生成字帖：
 
-想改字体 / 标题 / 排版，用记事本打开 `.env` 修改即可（见下文配置说明）。
+- **Windows**：先装 [Python 3.9+](https://www.python.org/downloads/)（安装时**勾选 “Add Python to PATH”**），
+  然后双击 **`zitie.bat`**；换内容可把 `.txt` 直接**拖到 `zitie.bat` 上**
+- **macOS / Linux**：终端运行
+
+  ```bash
+  chmod +x zitie.sh      # 仅首次
+  ./zitie.sh             # 生成 content.txt 的字帖
+  ./zitie.sh 观沧海.txt    # 生成指定文件；也可把 .txt 拖到终端的脚本上
+  ```
+
+想改字体 / 标题 / 排版，编辑 `.env` 即可（见下文配置说明）。
 
 ## 快速开始
 
@@ -165,6 +172,45 @@ python3 zitie.py content.txt --font "田英章硬笔楷书简体" --title "观�
   无 Word 时自动回退 LibreOffice
 - Windows 上：系统楷体可直接用；书家字体建议用 `--font-file` 指向字体文件以便内嵌
 - 生成的 `.docx` 用 Word / WPS 均可打开
+
+## 常见问题 FAQ
+
+**需要联网或大模型 API key 吗？**
+不需要。完全本地运行，不调用任何 AI / 云服务，`pip install` 后离线可用；唯一第三方库是 `python-docx`。
+
+**Windows 双击 `zitie.bat` 闪退 / 提示找不到 python？**
+Python 没装好或没加入 PATH。重装 [Python](https://www.python.org/downloads/)，安装时**勾选 “Add Python to PATH”**，
+装完重开一个窗口再双击。也可以把 `.txt` 拖到 `zitie.bat` 上生成。
+
+**macOS 运行 `./zitie.sh` 提示找不到 python3 / 没权限？**
+装 Python：`brew install python`（或官网安装包）。首次先执行一次 `chmod +x zitie.sh` 再运行。
+也可以不用脚本，直接 `python3 zitie.py content.txt --pdf`。
+
+**Linux 怎么装依赖？**
+`sudo apt install python3 python3-pip`（Ubuntu/Debian），然后 `./zitie.sh` 或 `python3 zitie.py`。
+
+**怎么换练习内容 / 标题 / 格子大小？**
+换内容：改 `content.txt` 或传入任意 txt；标题 / 字体 / 排版：编辑 `.env`，
+或命令行加 `--title "标题"`、`--cell 18`、`--rows 10 --cols 10`。
+
+**一页多少行、一行多少字？**
+默认按格子大小自动算（A4、15mm 格约 16 行 × 12 字）。想固定就用 `--rows 行数 --cols 字数`，格子大小会自动适配。
+
+**生成的字不是我选的字体 / 打开后字体变了？**
+书家字体要先把 `.ttf` 放进 `fonts/`，并用 `--font 字体名关键词` 选择；
+Word 打开若仍回退字体，直接用 `--pdf` 导出的 PDF 打印最稳（字体已内嵌）。
+
+**没有生成 PDF？**
+导出 PDF 需要安装 Word 或 [LibreOffice](https://zh-cn.libreoffice.org/download/)；不装也会正常生成 `.docx`。
+Windows 装了 LibreOffice 仍找不到时，在 `.env` 里设置
+`ZITIE_SOFFICE=C:\Program Files\LibreOffice\program\soffice.exe`。
+
+**田英章 / 庞中华这些字体能用吗？收费吗？**
+个人练字：自行搜索下载 `.ttf` 放进 `fonts/` 即可，脚本会自动识别并内嵌。
+这些多为商业字体，**商用 / 公开发布需购买授权**；项目本身不附带它们。免费可商用首选随附的霞鹜文楷（`--font wenkai`）。
+
+**`.env` 会不会被上传 / 泄露？**
+不会。`.env` 已在 `.gitignore` 中，只保存在本机；仓库里只有不含敏感信息的模板 `.env.example`。
 
 ## 贡献
 
