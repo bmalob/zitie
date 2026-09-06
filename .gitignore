@@ -1,0 +1,19 @@
+# 生成的字帖（docx/pdf 由脚本产出，不入库）
+*.docx
+*.doc
+*.pdf
+~$*
+
+# 字体：商业/版权字体不随仓库分发。
+# 霞鹜文楷（SIL OFL，免费可商用）已随附；其余字体请自行放入 fonts/。
+fonts/*
+!fonts/README.md
+!fonts/LXGWWenKai-Regular.ttf
+!fonts/OFL-LXGW-WenKai.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
