@@ -10,7 +10,10 @@
 ## 功能特性
 
 - **内容随意换**：诗词、课文、生字、姓名……放进 txt，一条命令重新生成
-- **标准字帖格式**：米字格 / 田字格 / 方框，A4 / A5 / B5，横排（现代）/ 竖排（传统从右往左）
+- **多种格子**：米字格 / 田字格 / 方框 / 回宫格 / 九宫格 / 四线三格（拼音·英文）/ 控笔训练格（横线·竖线·斜线·圆圈·波浪）
+- **A4 / A5 / B5**，横排（现代）/ 竖排（传统从右往左）
+- **省墨模式**（`--econo`）：格线变浅灰、范字保持纯黑，大量打印更省墨
+- **缺字检测**：生成前自动检查所选字体是否覆盖内容里的字，缺字提前警告，避免打印出方框
 - **任意字体**：把 `.ttf` 放进 `fonts/` 即自动识别；田英章、庞中华等书家字体会**内嵌进 docx**，
   换电脑、发手机、去打印店都不回退字体
 - **常用排版**：标题逐字占格且居中、正文按句居中、描红（浅灰范字）、每字重复、范字后留空临写
@@ -79,7 +82,8 @@ copy .env.example .env      # Windows
 | `ZITIE_TITLE` | 标题（横排写在第一行居中；留空不要标题） | `观沧海·汉曹操` |
 | `ZITIE_ORDER` | 排版：`horizontal` 横排 / `vertical` 竖排 | `horizontal` |
 | `ZITIE_PAPER` | 纸张：`A4` / `A5` / `B5` | `A4` |
-| `ZITIE_GRID_STYLE` | 格子：`mizi` 米字格 / `tian` 田字格 / `box` 方框 | `mizi` |
+| `ZITIE_GRID_STYLE` | 格子：`mizi`/`tian`/`box`/`huigong` 回宫格/`jiugong` 九宫格/`pinyin` 四线三格/`kongbi` 控笔格 | `mizi` |
+| `ZITIE_ECONO` | 省墨模式：`true` / `false`（格线浅灰、范字纯黑） | `false` |
 | `ZITIE_CELL` | 格子边长 mm（默认 15） | `15` |
 | `ZITIE_MARGIN` | 页边距 mm | `14` |
 | `ZITIE_CHAR_SCALE` | 字占格比例 0~1 | `0.85` |
@@ -108,7 +112,8 @@ copy .env.example .env      # Windows
 | `--blanks 2` | 每个字后留几个空格，临写用 | 0 |
 | `--repeat 3` | 每个字连续写几遍 | 1 |
 | `--trace` | 浅灰色字，描红用 | 关 |
-| `--grid-style tian` | `mizi` 米字格 / `tian` 田字格 / `box` 方框 | mizi |
+| `--grid-style jiugong` | `mizi` 米字格 / `tian` 田字格 / `box` 方框 / `huigong` 回宫格 / `jiugong` 九宫格 / `pinyin` 四线三格 / `kongbi` 控笔训练格 | mizi |
+| `--econo` | 省墨模式：格线浅灰、范字纯黑 | 关 |
 | `--font "楷体"` | 字体名或关键词（见下） | STKaiti |
 | `--font-file xx.ttf` | 直接指定任意位置的字体文件（同样内嵌） | 无 |
 | `--paper A5` | 纸张 A4 / A5 / B5 | A4 |
@@ -164,6 +169,19 @@ python3 zitie.py content.txt --trace --repeat 2 -o 描红.docx
 # 田英章横排 + PDF（字体内嵌，发打印店直接打印）
 python3 zitie.py content.txt --font "田英章硬笔楷书简体" --title "观沧海·曹操" \
     --order horizontal --char-scale 0.85 --pdf
+
+# 回宫格 / 九宫格
+python3 zitie.py content.txt --order horizontal --grid-style huigong
+python3 zitie.py content.txt --order horizontal --grid-style jiugong
+
+# 控笔训练格（无需内容，纯运笔练习：横线/竖线/斜线/圆圈/波浪）
+python3 zitie.py x --grid-style kongbi --pdf
+
+# 四线三格：拼音 / 英文字母（内容直接写字母，可带声调）
+python3 zitie.py pinyin.txt --grid-style pinyin --order horizontal --cell 12
+
+# 省墨模式：格线浅灰、范字纯黑
+python3 zitie.py content.txt --econo
 ```
 
 ## 说明与平台

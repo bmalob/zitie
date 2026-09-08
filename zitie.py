@@ -16,7 +16,10 @@
   --blanks 2                每个字后面留 2 个空格（临写练习）
   --repeat 3                每个字连续写 3 遍
   --trace                   浅灰色字，适合描红
-  --grid-style tian         tian 田字格 / mizi 米字格(默认) / box 方框
+  --grid-style huigong      格子：mizi 米字格(默认) / tian 田字格 / box 方框 /
+                            huigong 回宫格 / jiugong 九宫格 /
+                            pinyin 四线三格(拼音英文) / kongbi 控笔训练格
+  --econo                   省墨模式（格线浅灰、范字纯黑）
   --font "楷体"            换字体（Windows 用楷体，Mac 默认华文楷体）
 完整参数见 python3 zitie.py -h
 """
@@ -576,10 +579,29 @@ def read_clauses(source, keep_punct):
     clauses = []
     for part in split_re.split(text):
         chars = [ch for ch in part
-                 if CJK_RE.match(ch) or (keep_punct and ch in PUNCT)]
+                 if CJK_RE.match(ch) or ch.isalnum() or (keep_punct and ch in PUNCT)]
         if chars:
             clauses.append(chars)
     return clauses
+
+
+def find_missing_chars(font_path, chars):
+    """检查字体是否覆盖内容里的字，返回缺失字列表（无法检测时返回 None）。"""
+    if not font_path or not os.path.isfile(font_path):
+        return None
+    try:
+        from fontTools.ttLib import TTFont
+        ttf = TTFont(font_path, fontNumber=0, lazy=True)
+        cmap = ttf.getBestCmap()
+    except Exception:
+        return None
+    missing = []
+    for ch in dict.fromkeys(chars):
+        if ch.isspace():
+            continue
+        if ord(ch) not in cmap:
+            missing.append(ch)
+    return missing
 
 
 def build_items(clauses, repeat, blanks):
@@ -762,19 +784,33 @@ ANCHOR_CLOSE = '''</wps:spPr><wps:bodyPr/></wps:wsp>
 </wp:anchor></w:drawing>'''
 
 
-def dml_line(shape_id, x1, y1, x2, y2, color, weight_mm, dash=False, rot=False):
+def dml_line(shape_id, x1, y1, x2, y2, color, weight_mm, dash=False, rot=False, flip=False):
     """页面绝对定位直线（放页眉，每页重复，压在文字下方）。"""
     color = color.lstrip("#")
+    ox, oy = min(x1, x2), min(y1, y2)
     w = max(abs(x2 - x1), 0.01)
     h = max(abs(y2 - y1), 0.01)
     rot_attr = ' rot="5400000"' if rot else ""
+    flip_attr = ' flipH="1"' if flip else ""
     dash_el = '<a:prstDash val="dash"/>' if dash else ""
     w_emu = int(weight_mm * MM_TO_EMU)
     body = f'''
-<a:xfrm{rot_attr}><a:off x="0" y="0"/><a:ext cx="{int(w * MM_TO_EMU)}" cy="{int(h * MM_TO_EMU)}"/></a:xfrm>
+<a:xfrm{rot_attr}{flip_attr}><a:off x="0" y="0"/><a:ext cx="{int(w * MM_TO_EMU)}" cy="{int(h * MM_TO_EMU)}"/></a:xfrm>
 <a:prstGeom prst="line"><a:avLst/></a:prstGeom>
 <a:ln w="{w_emu}" cap="flat"><a:solidFill><a:srgbClr val="{color}"/></a:solidFill>{dash_el}</a:ln>'''
-    return _anchor_open(shape_id, x1, y1, w, h, behind=True) + body + ANCHOR_CLOSE
+    return _anchor_open(shape_id, ox, oy, w, h, behind=True) + body + ANCHOR_CLOSE
+
+
+def dml_shape(shape_id, x, y, w, h, prst, color, weight_mm, dash=False):
+    """页面绝对定位的空心形状（rect 矩形 / ellipse 圆），仅描边、不填充。"""
+    color = color.lstrip("#")
+    w_emu = int(weight_mm * MM_TO_EMU)
+    dash_el = '<a:prstDash val="dash"/>' if dash else ""
+    body = f'''
+<a:xfrm><a:off x="0" y="0"/><a:ext cx="{int(w * MM_TO_EMU)}" cy="{int(h * MM_TO_EMU)}"/></a:xfrm>
+<a:prstGeom prst="{prst}"><a:avLst/></a:prstGeom>
+<a:noFill/><a:ln w="{w_emu}" cap="flat"><a:solidFill><a:srgbClr val="{color}"/></a:solidFill>{dash_el}</a:ln>'''
+    return _anchor_open(shape_id, x, y, w, h, behind=True) + body + ANCHOR_CLOSE
 
 
 def dml_title_chars(shape_id_start, text, x0, y0, band_w, grid_h, font, color="000000", cell=15.0, rows=17):
@@ -813,57 +849,129 @@ def dml_title_chars(shape_id_start, text, x0, y0, band_w, grid_h, font, color="0
 
 def build_grid_shapes(x0, y0, title_w, cell, cols, rows, style,
                       grid_color, guide_color, top_rows=0):
-    """米字格/田字格/方框：实线边框 + 虚线辅助线。"""
+    """生成格子辅助线。支持：
+    mizi 米字格 / tian 田字格 / box 方框 / huigong 回宫格 / jiugong 九宫格 /
+    pinyin 四线三格（拼音/英文）/ kongbi 控笔训练格。"""
     frags = []
     sid = [1]
 
-    def L(x1, y1, x2, y2, color, weight, dash=False, rot=False):
-        frags.append(dml_line(sid[0], x1, y1, x2, y2, color, weight, dash, rot))
+    def L(x1, y1, x2, y2, color, weight, dash=False, rot=False, flip=False):
+        frags.append(dml_line(sid[0], x1, y1, x2, y2, color, weight, dash, rot, flip))
+        sid[0] += 1
+
+    def S(x, y, w, h, prst, color, weight, dash=False):
+        frags.append(dml_shape(sid[0], x, y, w, h, prst, color, weight, dash))
         sid[0] += 1
 
     tw = title_w
+    gx = x0 + tw
     total_w = tw + cols * cell
     total_h = rows * cell
     border = 0.16
     guide = 0.09
 
-    # 竖线分界 x（含标题带边界）
-    xs = [x0]
-    if tw > 0:
-        xs.append(x0 + tw)
-    for k in range(1, cols + 1):
-        xs.append(x0 + tw + k * cell)
+    gw = cols * cell
 
-    # 横线：逐段短线条（横向页面下，整页一根长线在个别渲染器里会被拉到页宽）
+    # ── 四线三格（拼音 / 英文）：连续横排四条线三格，只画左右外边框，无竖向分格 ──
+    if style == "pinyin":
+        L(gx, y0, gx, y0 + total_h, grid_color, border)
+        L(gx + gw, y0, gx + gw, y0 + total_h, grid_color, border)
+        for k in range(0, 3 * rows + 1):           # 每格高 1 行，内含 3 个小格
+            y = y0 + k * cell / 3.0
+            if k % 3 == 0:                         # 上/下主线实线
+                L(gx, y, gx + gw, y, grid_color, border)
+            else:                                  # 中间两条虚线
+                L(gx, y, gx + gw, y, guide_color, guide, dash=True)
+        return frags, sid[0]
+
+    # ── 方形格：外边框矩阵（逐段短线，兼容个别渲染器）──
+    xs = [gx]
+    for k in range(1, cols + 1):
+        xs.append(gx + k * cell)
     for k in range(rows + 1):
         y = y0 + k * cell
-        segs = list(zip(xs, xs[1:]))
-        if tw > 0 and 0 < k < rows:
-            segs = segs[1:]   # 标题带内部不画横线，保持干净竖条；仅顶/底封边
-        for a, b in segs:
+        for a, b in zip(xs, xs[1:]):
             L(a, y, b, y, grid_color, border)
-    y_grid0 = y0   # 顶部标题行同样画格子（标题字写在田/米字格里）
     for x in xs:
-        L(x, y_grid0, x, y0 + total_h, grid_color, border)
+        L(x, y0, x, y0 + total_h, grid_color, border)
 
     if style == "box":
         return frags, sid[0]
 
-    # 竖中线：整列贯穿（虚线）
+    # ── 回宫格：外框 + 居中内框（虚线，约格的 2/3）──
+    if style == "huigong":
+        inset = cell * 0.17
+        for i in range(cols):
+            for j in range(rows):
+                S(gx + i * cell + inset, y0 + j * cell + inset,
+                  cell - 2 * inset, cell - 2 * inset, "rect",
+                  guide_color, guide, dash=True)
+        return frags, sid[0]
+
+    # ── 九宫格：每格再用虚线三等分（2 竖 2 横）──
+    if style == "jiugong":
+        for i in range(cols):
+            for j in range(rows):
+                cx0, cy0 = gx + i * cell, y0 + j * cell
+                for t in (1.0 / 3, 2.0 / 3):
+                    L(cx0 + cell * t, cy0, cx0 + cell * t, cy0 + cell,
+                      guide_color, guide, dash=True)
+                    L(cx0, cy0 + cell * t, cx0 + cell, cy0 + cell * t,
+                      guide_color, guide, dash=True)
+        return frags, sid[0]
+
+    # ── 控笔训练格：每格循环 横线 / 竖线 / 斜线 / 圆圈 / 波浪（浅虚线，描写用）──
+    if style == "kongbi":
+        import math as _m
+        pats = ["hline", "vline", "diag", "circle", "wave"]
+        for j in range(rows):
+            for i in range(cols):
+                cx0, cy0 = gx + i * cell, y0 + j * cell
+                pat = pats[(i + 2 * j) % len(pats)]
+                c = guide_color
+                if pat == "hline":
+                    for t in (0.3, 0.5, 0.7):
+                        L(cx0 + cell * 0.12, cy0 + cell * t, cx0 + cell * 0.88,
+                          cy0 + cell * t, c, guide, dash=True)
+                elif pat == "vline":
+                    for t in (0.3, 0.5, 0.7):
+                        L(cx0 + cell * t, cy0 + cell * 0.12, cx0 + cell * t,
+                          cy0 + cell * 0.88, c, guide, dash=True)
+                elif pat == "diag":
+                    L(cx0, cy0, cx0 + cell, cy0 + cell,
+                      c, guide, dash=True)                      # \ （格角到格角）
+                    L(cx0, cy0, cx0 + cell, cy0 + cell,
+                      c, guide, dash=True, rot=True)            # /
+                elif pat == "circle":
+                    r = cell * 0.26
+                    S(cx0 + cell / 2 - r, cy0 + cell / 2 - r, 2 * r, 2 * r,
+                      "ellipse", c, guide, dash=True)
+                elif pat == "wave":
+                    pts = []
+                    n = 14
+                    for s in range(n + 1):
+                        t = s / n
+                        px = cx0 + cell * (0.12 + 0.76 * t)
+                        py = cy0 + cell * 0.5 + cell * 0.22 * _m.sin(t * 2 * _m.pi * 2)
+                        pts.append((px, py))
+                    for (a1, a2), (b1, b2) in zip(pts, pts[1:]):
+                        L(a1, a2, b1, b2, c, guide, dash=True)
+        return frags, sid[0]
+
+    # ── 田字格 / 米字格：中虚线（米字再加对角线）──
     for i in range(cols):
-        mx = x0 + tw + i * cell + cell / 2
-        L(mx, y_grid0, mx, y0 + total_h, guide_color, guide, dash=True)
-    # 横中线：逐列短虚线
+        mx = gx + i * cell + cell / 2
+        L(mx, y0, mx, y0 + total_h, guide_color, guide, dash=True)
     for j in range(rows):
         my = y0 + (j + 0.5) * cell
         for i in range(cols):
-            cx0 = x0 + tw + i * cell
+            cx0 = gx + i * cell
             L(cx0, my, cx0 + cell, my, guide_color, guide, dash=True)
 
     if style == "mizi":
         for i in range(cols):
             for j in range(rows):
-                cx0 = x0 + tw + i * cell
+                cx0 = gx + i * cell
                 cy0 = y0 + j * cell
                 L(cx0, cy0, cx0 + cell, cy0 + cell, guide_color, guide, dash=True)
                 L(cx0, cy0, cx0 + cell, cy0 + cell, guide_color, guide, dash=True, rot=True)
@@ -990,11 +1098,16 @@ def main():
     ap.add_argument("--char-scale", type=float, default=0.80, help="字占格比例（默认 0.80）")
     ap.add_argument("--order", choices=["vertical", "horizontal"], default="vertical",
                     help="vertical 竖排从右往左（默认）/ horizontal 横排")
-    ap.add_argument("--grid-style", choices=["mizi", "tian", "box"], default="mizi",
-                    help="mizi 米字格（默认）/ tian 田字格 / box 方框")
+    ap.add_argument("--grid-style",
+                    choices=["mizi", "tian", "box", "huigong", "jiugong", "pinyin", "kongbi"],
+                    default="mizi",
+                    help="mizi 米字格(默认)/tian 田字格/box 方框/huigong 回宫格/"
+                          "jiugong 九宫格/pinyin 四线三格(拼音英文)/kongbi 控笔训练格")
     ap.add_argument("--repeat", type=int, default=1, help="每字重复次数")
     ap.add_argument("--blanks", type=int, default=0, help="每字后留空字数")
     ap.add_argument("--trace", action="store_true", help="描红：浅灰色字")
+    ap.add_argument("--econo", action="store_true",
+                    help="省墨模式：格线用浅灰、范字保持纯黑，适合大量打印")
     ap.add_argument("--pen-color", default=None,
                     help="范字颜色（十六进制，如 808080 灰色让笔迹更细淡；默认黑色）")
     ap.add_argument("--keep-punct", action="store_true", help="标点也占格")
@@ -1017,6 +1130,7 @@ def main():
         margin=env_float(env, "ZITIE_MARGIN", 14.0),
         char_scale=env_float(env, "ZITIE_CHAR_SCALE", 0.80),
         pdf=env_bool(env, "ZITIE_PDF", False),
+        econo=env_bool(env, "ZITIE_ECONO", False),
     )
     args = ap.parse_args()
 
@@ -1024,12 +1138,29 @@ def main():
         print_available_fonts()
         sys.exit(0)
 
+    if args.econo:
+        # 省墨：格线/辅助线变浅灰；范字仍是纯黑，对比下反而更突出
+        args.grid_color = "#C9C9C9"
+        args.guide_color = "#E2E2E2"
+
     font_family, font_path = resolve_font(args.font, args.font_file)
 
-    clauses = read_clauses(args.source, args.keep_punct)
-    if not clauses:
-        sys.exit("没有可写入的汉字，请检查内容。")
-    items = build_items(clauses, args.repeat, args.blanks)
+    if args.grid_style == "kongbi":
+        # 控笔训练格：纯运笔练习，不需要文字内容
+        clauses, items = [], []
+    else:
+        clauses = read_clauses(args.source, args.keep_punct)
+        if not clauses:
+            sys.exit("没有可写入的汉字，请检查内容。")
+        items = build_items(clauses, args.repeat, args.blanks)
+
+    # 缺字检测：所选字体不覆盖某些字时提前警告，避免打印出方框
+    all_chars = [it for it in items if isinstance(it, str) and it != "BREAK"]
+    missing = find_missing_chars(font_path, all_chars)
+    if missing:
+        print(f"⚠️  当前字体【{font_family}】缺少 {len(missing)} 个字，会显示为方框/豆腐块："
+              f"{''.join(missing)}")
+        print("   建议换字体重试，如 --font wenkai（霞鹜文楷，覆盖很全）。")
 
     page_w, page_h = PAPERS[args.paper]
     landscape = args.orient == "landscape"
@@ -1039,7 +1170,7 @@ def main():
          "left": args.margin, "right": args.margin}
     avail_w = page_w - m["left"] - m["right"]
     avail_h = page_h - m["top"] - m["bottom"] - 6
-    top_title = bool(args.title) and args.order == "horizontal"
+    top_title = bool(args.title) and args.order == "horizontal" and args.grid_style != "kongbi"
     top_rows = 1 if top_title else 0
     if top_title:
         title_w = 0.0                       # 横排：不要左侧标题列
@@ -1060,7 +1191,11 @@ def main():
     if cols < 1 or rows < 1:
         sys.exit("格子太大或页边距太大，一页放不下任何格子。")
 
-    char_pt = mm_pt(cell) * args.char_scale
+    char_scale = args.char_scale
+    if args.grid_style == "pinyin":
+        # 拼音/英文：字母以四格三线的中格为准，整体调小，落在三格内
+        char_scale = args.char_scale * 0.72
+    char_pt = mm_pt(cell) * char_scale
     if args.trace:
         color = "#D9D9D9"
     elif args.pen_color:
