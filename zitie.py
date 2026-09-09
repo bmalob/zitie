@@ -19,7 +19,6 @@
   --grid-style huigong      格子：mizi 米字格(默认) / tian 田字格 / box 方框 /
                             huigong 回宫格 / jiugong 九宫格 /
                             pinyin 四线三格(拼音英文) / kongbi 控笔训练格
-  --econo                   省墨模式（格线浅灰、范字纯黑）
   --font "楷体"            换字体（Windows 用楷体，Mac 默认华文楷体）
 完整参数见 python3 zitie.py -h
 """
@@ -1106,8 +1105,6 @@ def main():
     ap.add_argument("--repeat", type=int, default=1, help="每字重复次数")
     ap.add_argument("--blanks", type=int, default=0, help="每字后留空字数")
     ap.add_argument("--trace", action="store_true", help="描红：浅灰色字")
-    ap.add_argument("--econo", action="store_true",
-                    help="省墨模式：格线用浅灰、范字保持纯黑，适合大量打印")
     ap.add_argument("--pen-color", default=None,
                     help="范字颜色（十六进制，如 808080 灰色让笔迹更细淡；默认黑色）")
     ap.add_argument("--keep-punct", action="store_true", help="标点也占格")
@@ -1130,18 +1127,12 @@ def main():
         margin=env_float(env, "ZITIE_MARGIN", 14.0),
         char_scale=env_float(env, "ZITIE_CHAR_SCALE", 0.80),
         pdf=env_bool(env, "ZITIE_PDF", False),
-        econo=env_bool(env, "ZITIE_ECONO", False),
     )
     args = ap.parse_args()
 
     if args.list_fonts:
         print_available_fonts()
         sys.exit(0)
-
-    if args.econo:
-        # 省墨：格线/辅助线变浅灰；范字仍是纯黑，对比下反而更突出
-        args.grid_color = "#C9C9C9"
-        args.guide_color = "#E2E2E2"
 
     font_family, font_path = resolve_font(args.font, args.font_file)
 
