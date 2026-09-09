@@ -20,6 +20,8 @@
                             huigong 回宫格 / jiugong 九宫格 /
                             pinyin 四线三格(拼音英文) / kongbi 控笔训练格
   --pinyin                  每个汉字上方自动标带声调拼音
+  --bishun number           笔顺字帖：number 整字标笔顺编号 / step 逐笔分解描红
+                            （首次使用自动下载开源笔画数据，约 29MB）
   --pdf --pdf-engine reportlab  纯 Python 直出 PDF（免装 Office）
   --font "楷体"            换字体（Windows 用楷体，Mac 默认华文楷体）
 完整参数见 python3 zitie.py -h
@@ -27,6 +29,7 @@
 
 import argparse
 import glob
+import json
 import math
 import os
 import re
@@ -56,6 +59,14 @@ elif sys.platform == "darwin":
     USER_FONT_DIR = os.path.expanduser("~/Library/Fonts")
 else:                      # Linux
     USER_FONT_DIR = os.path.expanduser("~/.local/share/fonts")
+
+# 笔顺数据（makemeahanzi，开源，约 9000 字）：首次使用 --bishun 时自动下载
+DATA_DIR = os.path.join(HERE, "data")
+GRAPHICS_FILE = os.path.join(DATA_DIR, "graphics.txt")
+GRAPHICS_URL = "https://raw.githubusercontent.com/skishore/makemeahanzi/master/graphics.txt"
+GLYPH_CACHE_DIR = os.path.join(DATA_DIR, "cache")
+BISHUN_RED = "#D0302A"          # 最新一笔 / 笔顺编号的红色
+GLYPH_PX = 600                  # 笔顺图渲染像素（15mm 格约 1000dpi，打印足够清晰）
 
 
 def load_env():
@@ -581,7 +592,8 @@ def _register_pdf_font(font_path):
 
 def export_pdf_reportlab(pdf_path, pages, *, page_w, page_h, m, title_w, cell,
                          cols, rows, style, grid_color, guide_color, order,
-                         title, top_title, char_pt, pinyin_pt, pen_color, font_path):
+                         title, top_title, char_pt, pinyin_pt, pen_color, font_path,
+                         glyphs=None):
     """纯 Python 直接画 PDF（reportlab），不依赖 Word/LibreOffice，跨平台渲染一致。"""
     from reportlab.pdfgen import canvas
     from reportlab.pdfbase import pdfmetrics
@@ -651,8 +663,18 @@ def export_pdf_reportlab(pdf_path, pages, *, page_w, page_h, m, title_w, cell,
                 text(cx, cy, ch, size)
 
         # 正文
+        img_size_mm = char_pt / mm_pt(1.0)
+
+        def put_image(cx_pt, cy_center_pt, desc, size_mm=img_size_mm):
+            png = glyph_png(desc, glyphs or {}, pen_color)
+            if not png:
+                return False
+            side = size_mm * PT
+            cv.drawImage(png, cx_pt - side / 2, cy_center_pt - side / 2, side, side)
+            return True
+
         for k, val in cells.items():
-            ch, py = val if isinstance(val, tuple) else (val, None)
+            ch, py, im = val if isinstance(val, tuple) else (val, None, None)
             if not ch:
                 continue
             if order == "vertical":
@@ -666,13 +688,16 @@ def export_pdf_reportlab(pdf_path, pages, *, page_w, page_h, m, title_w, cell,
             cx = m["left"] + title_w + table_col * cell + cell / 2
             cy = m["top"] + r * cell + cell / 2
             if py and pinyin_pt:
-                # 拼音在上、汉字在下，两行作为整体垂直居中
+                # 拼音在上、汉字（或笔顺图）在下，两行作为整体垂直居中
                 gap = pinyin_pt * 0.35
                 lh_ch = pdfmetrics.getAscent(font, char_pt) - pdfmetrics.getDescent(font, char_pt)
                 lh_py = pdfmetrics.getAscent(font, pinyin_pt) - pdfmetrics.getDescent(font, pinyin_pt)
                 cy_pt = Y(cy)
-                draw(X(cx), None, ch, char_pt, center_y=cy_pt - (lh_py + gap) / 2)
+                if not (im and put_image(X(cx), cy_pt - (lh_py + gap) / 2, im)):
+                    draw(X(cx), None, ch, char_pt, center_y=cy_pt - (lh_py + gap) / 2)
                 draw(X(cx), None, py, pinyin_pt, center_y=cy_pt + (lh_ch + gap) / 2)
+            elif im and put_image(X(cx), Y(cy), im):
+                pass
             else:
                 text(cx, cy, ch, char_pt)
 
@@ -737,6 +762,224 @@ def find_missing_chars(font_path, chars):
     return missing
 
 
+# ---------------- 笔顺与逐笔描红（数据：开源 makemeahanzi） ----------------
+
+def ensure_graphics_file():
+    """首次使用时把 graphics.txt（约 29MB，~9000 字笔画数据）下载到 data/。"""
+    if os.path.isfile(GRAPHICS_FILE) and os.path.getsize(GRAPHICS_FILE) > 1_000_000:
+        return
+    os.makedirs(DATA_DIR, exist_ok=True)
+    import urllib.request
+    print(f"首次使用笔顺功能，下载笔画数据（约 29MB，仅下载一次）：\n  {GRAPHICS_URL}")
+    tmp = GRAPHICS_FILE + ".part"
+    try:
+        req = urllib.request.Request(GRAPHICS_URL, headers={"User-Agent": "zitie"})
+
+        def open_url():
+            import ssl
+            try:
+                return urllib.request.urlopen(req, timeout=60)
+            except urllib.error.URLError as exc:
+                if not isinstance(getattr(exc, "reason", None), ssl.SSLError):
+                    raise
+                try:
+                    import certifi
+                    ctx = ssl.create_default_context(cafile=certifi.where())
+                    return urllib.request.urlopen(req, timeout=60, context=ctx)
+                except Exception:
+                    print("⚠️  系统缺少根证书，已用不校验证书方式下载（数据来自 GitHub 官方文件）")
+                    ctx = ssl._create_unverified_context()
+                    return urllib.request.urlopen(req, timeout=60, context=ctx)
+
+        with open_url() as resp, open(tmp, "wb") as out:
+            total = int(resp.headers.get("Content-Length", 0))
+            done = 0
+            while True:
+                chunk = resp.read(1 << 16)
+                if not chunk:
+                    break
+                out.write(chunk)
+                done += len(chunk)
+                if total:
+                    sys.stderr.write(f"\r   下载中 {done * 100 // total:3d}%")
+                    sys.stderr.flush()
+        sys.stderr.write("\n")
+        os.replace(tmp, GRAPHICS_FILE)
+    except Exception as exc:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        sys.exit(f"笔画数据下载失败：{exc}\n可手动下载 {GRAPHICS_URL}\n"
+                 f"放到 {GRAPHICS_FILE} 后重试。")
+
+
+def load_glyphs(chars):
+    """读取所需汉字的笔画轮廓 strokes 与笔锋中线 medians（1024 坐标系，y 向下）。"""
+    ensure_graphics_file()
+    needed = {ch for ch in chars if CJK_RE.match(ch)}
+    glyphs = {}
+    if not needed:
+        return glyphs
+    prefixes = tuple('{"character":"' + ch + '"' for ch in needed)
+    with open(GRAPHICS_FILE, encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith(prefixes):
+                obj = json.loads(line)
+                glyphs[obj["character"]] = obj
+    return glyphs
+
+
+def _spread_positions(points, radius, limit=1024):
+    """把重叠的编号圆圈做简单排斥位移，避免互相遮挡（限定在画布边距内）。"""
+    pts = [list(p) for p in points]
+    lo, hi = radius + 10, limit - radius - 10
+    min_dist = radius * 2 - 6
+    for _ in range(40):
+        moved = False
+        for i in range(len(pts)):
+            for j in range(i + 1, len(pts)):
+                dx, dy = pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]
+                dist = math.hypot(dx, dy)
+                if 0 <= dist < min_dist:
+                    push = (min_dist - dist) / 2
+                    if dist == 0:
+                        dx, dy, dist = 1, 0, 1
+                    ux, uy = dx / dist, dy / dist
+                    pts[i][0] -= ux * push
+                    pts[i][1] -= uy * push
+                    pts[j][0] += ux * push
+                    pts[j][1] += uy * push
+                    moved = True
+        for p in pts:
+            p[0] = min(max(p[0], lo), hi)
+            p[1] = min(max(p[1], lo), hi)
+        if not moved:
+            break
+    return pts
+
+
+def glyph_svg(desc, glyph, ink):
+    """生成单字 SVG。
+    ('num', ch)：整字黑色 + 每笔起点红圈白字编号；
+    ('step', ch, k)：只画前 k 笔，最新一笔红色，其余黑色，起点小标号。"""
+    mode = desc[0]
+    step = desc[2] if mode == "step" else None
+    strokes, medians = glyph["strokes"], glyph["medians"]
+    total = len(strokes)
+    k = total if step is None else step
+    red = BISHUN_RED
+    radius, fsize = (46, 48) if step is None else (40, 42)
+    if total >= 10:
+        fsize = 40 if step is None else 32
+    anchors = _spread_positions([medians[i][0] for i in range(k)], radius)
+    parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">']
+    for i in range(k):
+        fill = red if (step is not None and i == k - 1) else ink
+        parts.append(f'<path d="{strokes[i]}" fill="{fill}"/>')
+    for i, (x, y) in enumerate(anchors):
+        newest = step is not None and i == k - 1
+        if step is None or newest:
+            bgc, txc, oc = red, "#FFFFFF", red
+        else:
+            bgc, txc, oc = "#FFFFFF", "#333333", "#9A9A9A"
+        x, y = round(x), round(y)
+        parts.append(f'<circle cx="{x}" cy="{y}" r="{radius}" fill="{bgc}" '
+                     f'stroke="{oc}" stroke-width="6"/>')
+        parts.append(f'<text x="{x}" y="{round(y + fsize * 0.36)}" font-size="{fsize}" '
+                     f'fill="{txc}" text-anchor="middle" font-family="Helvetica">{i + 1}</text>')
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _white_to_alpha(img, ink_hex):
+    """把白底渲染图转成透明底（纯 PIL 运算）：红色编号按红色、其余按墨迹色反推 alpha。"""
+    from PIL import Image, ImageChops
+    rgb = img.convert("RGB")
+    r, g, b = rgb.split()
+
+    def alpha_lut(fore):
+        denom = max(255 - fore, 1)
+        return [min(255, (255 - c) * 255 // denom) for c in range(256)]
+
+    def alpha_for(fr, fg, fb):
+        ar, ag, ab = (r.point(alpha_lut(fr)), g.point(alpha_lut(fg)),
+                      b.point(alpha_lut(fb)))
+        return ImageChops.lighter(ImageChops.lighter(ar, ag), ab)
+
+    a_ink = alpha_for(*(int(ink_hex[i:i + 2], 16) for i in (0, 2, 4)))
+    a_red = alpha_for(0xD0, 0x30, 0x2A)
+    # 红色编号遮罩：r 明显大于 g、b
+    rg = ImageChops.subtract(r, g, scale=1.0, offset=-40)
+    rb = ImageChops.subtract(r, b, scale=1.0, offset=-40)
+    red_mask = ImageChops.darker(rg, rb).point(lambda v: 255 if v else 0)
+    rgb.putalpha(Image.composite(a_red, a_ink, red_mask))
+    return rgb
+
+
+def glyph_png(desc, glyphs, ink_hex):
+    """笔顺图 PNG 路径（data/cache 磁盘缓存）。该字没有笔画数据时返回 None。"""
+    ch = desc[1]
+    glyph = glyphs.get(ch)
+    if not glyph or not glyph.get("strokes"):
+        return None
+    ink = (ink_hex or "111111").lstrip("#") or "111111"
+    if len(ink) == 3:
+        ink = "".join(c * 2 for c in ink)
+    if desc[0] == "num":
+        tag = f"num_{ord(ch)}"
+    else:
+        tag = f"step_{ord(ch)}_{desc[2]}"
+    cache = os.path.join(GLYPH_CACHE_DIR, f"{tag}_{ink}.png")
+    if os.path.isfile(cache):
+        return cache
+    import io
+    try:
+        from svglib.svglib import svg2rlg
+        from reportlab.graphics import renderPM
+    except ImportError:
+        sys.exit("笔顺功能还需要 svglib / rlPyCairo / pillow，请先安装：\n"
+                 "  pip install svglib rlPyCairo pillow")
+    drawing = svg2rlg(io.StringIO(glyph_svg(desc, glyph, "#" + ink)))
+    scale = GLYPH_PX / float(drawing.width)
+    drawing.scale(scale, scale)
+    drawing.width = drawing.height = GLYPH_PX
+    img = _white_to_alpha(renderPM.drawToPIL(drawing, dpi=72), ink)
+    os.makedirs(GLYPH_CACHE_DIR, exist_ok=True)
+    img.save(cache)
+    return cache
+
+
+def build_practice_streams(clauses, repeat, blanks, bishun_mode, glyphs, clauses_py=None):
+    """三条对齐的单元格流：字符 / 图片描述符 / 拼音；元素 None=空格，'BREAK'=换列或换行。
+    number 模式：每个有数据的汉字占 1 格（整字编号图）；
+    step 模式：每个有数据的汉字占 N 格（第 k 格显示前 k 笔，最新一笔红色）。"""
+    items, imgs, pys = [], [], []
+
+    def push(it, im, py):
+        items.append(it)
+        imgs.append(im)
+        pys.append(py)
+
+    for ci, clause in enumerate(clauses):
+        readings = clauses_py[ci] if clauses_py is not None else None
+        for ii, ch in enumerate(clause):
+            reading = readings[ii] if readings else None
+            covered = bishun_mode != "off" and ch in glyphs
+            for _ in range(max(1, repeat)):
+                if covered and bishun_mode == "step":
+                    for k in range(1, len(glyphs[ch]["strokes"]) + 1):
+                        push(ch, ("step", ch, k), None)
+                else:
+                    im = ("num", ch) if covered and bishun_mode == "number" else None
+                    push(ch, im, reading)
+            for _ in range(blanks):
+                push(None, None, None)
+        push("BREAK", "BREAK", "BREAK")
+    for seq in (items, imgs, pys):
+        if seq and seq[-1] == "BREAK":
+            seq.pop()
+    return items, imgs, pys
+
+
 def annotate_pinyin(clauses):
     """给每条 clause 的汉字注上带声调拼音（按整句识别多音字），返回与 clauses 对齐的拼音列表。
     非汉字（字母等）不注音。需要 pypinyin。"""
@@ -786,11 +1029,12 @@ def build_pinyin_stream(clauses_py, repeat, blanks):
     return stream
 
 
-def paginate(items, cols, rows, order, top_rows=0, py_items=None):
-    """返回 pages：{单元格序号: (字, 拼音或None)}。"""
+def paginate(items, cols, rows, order, top_rows=0, py_items=None, img_items=None):
+    """返回 pages：{单元格序号: (字, 拼音或None, 笔顺图描述符或None)}。"""
     def pack(it, idx):
         py = py_items[idx] if py_items is not None else None
-        return it, (py if it else None)
+        im = img_items[idx] if img_items is not None else None
+        return it, (py if it else None), (im if it else None)
 
     if order == "vertical":
         # 竖排：按列从右往左填充
@@ -831,27 +1075,71 @@ def paginate(items, cols, rows, order, top_rows=0, py_items=None):
                 curpy.append(py)
         if curpy:
             clause_py.append(curpy)
+    clause_img, curimg = [], []
+    if img_items is not None:
+        for im in img_items:
+            if im == "BREAK":
+                clause_img.append(curimg)
+                curimg = []
+            else:
+                curimg.append(im)
+        if curimg:
+            clause_img.append(curimg)
+
+    def step_group(im, prev_im):
+        """单元格是否与上一格同属一个逐笔分解字（同字且编号连续）。"""
+        return (im is not None and prev_im is not None
+                and im[0] == "step" and prev_im[0] == "step"
+                and im[1] == prev_im[1] and im[2] == prev_im[2] + 1)
+
+    def row_segments(seg, segpy, segimg):
+        """按整字分组贪心折行：同一个字的逐笔分解图不被换行拆断。"""
+        groups, g = [], []
+        for i in range(len(seg)):
+            same = g and step_group(segimg[i] if segimg else None,
+                                    segimg[i - 1] if segimg else None)
+            if same or not g:
+                g.append(i)
+            else:
+                groups.append(g)
+                g = [i]
+            if len(g) > cols and len(g) > 1:
+                # 单字笔画数超过一行格数：硬切（极少见）
+                groups.append(g[:-1])
+                g = [g[-1]]
+        if g:
+            groups.append(g)
+        rows_idx, cur, cur_len = [], [], 0
+        for grp in groups:
+            if cur and cur_len + len(grp) > cols:
+                rows_idx.append(cur)
+                cur, cur_len = [], 0
+            cur.extend(grp)
+            cur_len += len(grp)
+        if cur:
+            rows_idx.append(cur)
+        return [([seg[i] for i in rr], [segpy[i] for i in rr],
+                 [segimg[i] for i in rr]) for rr in rows_idx]
 
     pages = [{}]
     row = 0
     for ci, cl in enumerate(clauses):
         pylist = clause_py[ci] if clause_py else [None] * len(cl)
+        imlist = clause_img[ci] if clause_img else [None] * len(cl)
         last = max((i for i, ch in enumerate(cl) if ch), default=-1)
         seg = cl[:last + 1]            # 去掉句尾空白
-        segpy = pylist[:last + 1]
-        L = len(seg)
-        nrows = max(1, math.ceil(L / cols))
+        segpy, segimg = pylist[:last + 1], imlist[:last + 1]
+        segments = row_segments(seg, segpy, segimg)
+        nrows = len(segments)
         if row + nrows > eff_rows:     # 当前页放不下，换页
             pages.append({})
             row = 0
-        for r in range(nrows):
-            part = seg[r * cols:(r + 1) * cols]
-            partpy = segpy[r * cols:(r + 1) * cols]
+        for r, (part, partpy, partimg) in enumerate(segments):
             plen = len(part)
             start = (cols - plen) // 2 if plen < cols else 0
             for i, ch in enumerate(part):
                 if ch:
-                    pages[-1][(row + r) * cols + start + i] = (ch, partpy[i])
+                    pages[-1][(row + r) * cols + start + i] = (ch, partpy[i], partimg[i])
         row += nrows
     return pages
 
@@ -950,14 +1238,20 @@ def _style_run(run, font, font_pt, color):
     rPr.append(szCs)
 
 
-def write_char(cell, ch, font, font_pt, color, pinyin=None, pinyin_pt=None):
+def write_char(cell, ch, font, font_pt, color, pinyin=None, pinyin_pt=None,
+               img=None, glyphs=None, img_mm=0.0):
     if pinyin:
         py_run = cell.paragraphs[0].add_run(pinyin)
         _style_run(py_run, font, pinyin_pt, color)
         br = cell.paragraphs[0].add_run()
         br._r.append(OxmlElement("w:br"))
-    run = cell.paragraphs[0].add_run(ch)
-    _style_run(run, font, font_pt, color)
+    png = glyph_png(img, glyphs, color) if img else None
+    if png:
+        run = cell.paragraphs[0].add_run()
+        run.add_picture(png, width=Mm(img_mm), height=Mm(img_mm))
+    else:
+        run = cell.paragraphs[0].add_run(ch)
+        _style_run(run, font, font_pt, color)
 
 
 def _anchor_open(shape_id, x_mm, y_mm, w_mm, h_mm, behind):
@@ -1243,7 +1537,8 @@ def add_section_break(doc, header_part, page_w, page_h, m):
 
 
 def build_page(doc, cells, cols, rows, cell_mm, title_w, font,
-               char_pt, color, order, title=None, top_rows=0, pinyin_pt=0.0):
+               char_pt, color, order, title=None, top_rows=0, pinyin_pt=0.0,
+               glyphs=None, img_mm=0.0):
     band = 1 if title_w > 0 else 0
     ncols = cols + band
     tbl = doc.add_table(rows=rows, cols=ncols)
@@ -1271,7 +1566,7 @@ def build_page(doc, cells, cols, rows, cell_mm, title_w, font,
                 write_char(tbl.cell(0, col), ch, font, char_pt, color)
 
     for k, val in cells.items():
-        ch, py = val if isinstance(val, tuple) else (val, None)
+        ch, py, im = val if isinstance(val, tuple) else (val, None, None)
         if not ch:
             continue
         if order == "vertical":
@@ -1283,7 +1578,8 @@ def build_page(doc, cells, cols, rows, cell_mm, title_w, font,
             c = k % cols
             table_col = band + c
         write_char(tbl.cell(r, table_col), ch, font, char_pt, color,
-                   pinyin=py, pinyin_pt=pinyin_pt or None)
+                   pinyin=py, pinyin_pt=pinyin_pt or None,
+                   img=im, glyphs=glyphs, img_mm=img_mm)
 
     # 竖排时的标题由页眉文本框输出；横排顶部标题已在首行合并单元格中处理
 
@@ -1328,6 +1624,10 @@ def main():
     ap.add_argument("--trace", action="store_true", help="描红：浅灰色字")
     ap.add_argument("--pinyin", action="store_true",
                     help="汉字上方自动标注带声调拼音（低年级用）")
+    ap.add_argument("--bishun", choices=["off", "number", "step"], default="off",
+                    help="笔顺字帖（数据来自开源 makemeahanzi，首次使用自动下载约 29MB）："
+                         "number 整字标笔顺编号；step 逐笔分解描红（每字按笔画数占多格，"
+                         "最新一笔红色）")
     ap.add_argument("--pen-color", default=None,
                     help="范字颜色（十六进制，如 808080 灰色让笔迹更细淡；默认黑色）")
     ap.add_argument("--keep-punct", action="store_true", help="标点也占格")
@@ -1351,6 +1651,7 @@ def main():
         char_scale=env_float(env, "ZITIE_CHAR_SCALE", 0.80),
         pdf=env_bool(env, "ZITIE_PDF", False),
         pinyin=env_bool(env, "ZITIE_PINYIN", False),
+        bishun=env.get("ZITIE_BISHUN", "off"),
         pdf_engine=env.get("ZITIE_PDF_ENGINE", "auto"),
     )
     args = ap.parse_args()
@@ -1363,19 +1664,44 @@ def main():
 
     if args.grid_style == "kongbi":
         # 控笔训练格：纯运笔练习，不需要文字内容
-        clauses, items, py_items = [], [], None
+        clauses, items, img_items, py_items, glyphs = [], [], None, None, None
+        if args.bishun != "off":
+            print("⚠️  控笔训练格不含文字，已忽略 --bishun。")
+            args.bishun = "off"
     else:
         clauses = read_clauses(args.source, args.keep_punct)
         if not clauses:
             sys.exit("没有可写入的汉字，请检查内容。")
-        items = build_items(clauses, args.repeat, args.blanks)
-        py_items = None
-        if args.pinyin:
-            clauses_py = annotate_pinyin(clauses)
-            py_items = build_pinyin_stream(clauses_py, args.repeat, args.blanks)
+        if args.bishun == "step" and args.pinyin:
+            sys.exit("--bishun step（逐笔分解）与 --pinyin 不能同时使用；"
+                     "编号笔顺 --bishun number 可以搭配拼音。")
+        glyphs = {}
+        if args.bishun != "off":
+            needed = [ch for cl in clauses for ch in cl if CJK_RE.match(ch)]
+            glyphs = load_glyphs(needed)
+            miss_glyph = [ch for ch in dict.fromkeys(needed) if ch not in glyphs]
+            if miss_glyph:
+                print(f"⚠️  笔画库未收录 {len(miss_glyph)} 个字，这些字改用普通字体显示："
+                      f"{''.join(miss_glyph)}")
+        if args.bishun != "off":
+            clauses_py = annotate_pinyin(clauses) if args.pinyin else None
+            items, img_items, py_items = build_practice_streams(
+                clauses, args.repeat, args.blanks, args.bishun, glyphs, clauses_py)
+        else:
+            glyphs = None
+            items = build_items(clauses, args.repeat, args.blanks)
+            img_items = None
+            py_items = None
+            if args.pinyin:
+                clauses_py = annotate_pinyin(clauses)
+                py_items = build_pinyin_stream(clauses_py, args.repeat, args.blanks)
 
-    # 缺字检测：所选字体不覆盖某些字时提前警告，避免打印出方框
-    all_chars = [it for it in items if isinstance(it, str) and it != "BREAK"]
+    # 缺字检测：所选字体不覆盖某些字时提前警告，避免打印出方框（笔顺图用字不查字体）
+    if img_items is not None:
+        all_chars = [it for it, im in zip(items, img_items)
+                     if im is None and isinstance(it, str) and it != "BREAK"]
+    else:
+        all_chars = [it for it in items if isinstance(it, str) and it != "BREAK"]
     missing = find_missing_chars(font_path, all_chars)
     if missing:
         print(f"⚠️  当前字体【{font_family}】缺少 {len(missing)} 个字，会显示为方框/豆腐块："
@@ -1449,12 +1775,13 @@ def main():
                                      cell, rows))
     add_header_grid(doc, frags)
 
-    pages = paginate(items, cols, rows, args.order, top_rows, py_items)
+    pages = paginate(items, cols, rows, args.order, top_rows, py_items, img_items)
+    img_mm = char_pt / mm_pt(1.0)
     for idx, cells in enumerate(pages):
         build_page(doc, cells, cols, rows, cell, title_w,
                   font_family, char_pt, color, args.order,
                   title=args.title if top_title else None, top_rows=top_rows,
-                  pinyin_pt=pinyin_pt)
+                  pinyin_pt=pinyin_pt, glyphs=glyphs, img_mm=img_mm)
         if idx < len(pages) - 1:
             add_section_break(doc, doc.sections[0].header.part, page_w, page_h, m)
 
@@ -1469,8 +1796,10 @@ def main():
             print(f"⚠️  字体内嵌失败（不影响使用，可装字体或用 PDF）：{e}")
     print(f"✅ 已生成 {args.output}")
     practice_rows = rows - top_rows
+    bishun_tag = {"number": "笔顺编号", "step": "逐笔分解"}.get(args.bishun)
     print(f"   {args.paper}｜{cell:.1f}mm 格｜每页 {practice_rows} 行 × {cols} 格 = {practice_rows*cols} 字"
-          f"｜{len(pages)} 页｜{total} 字（含空格）｜{args.grid_style}｜{args.order}")
+          f"｜{len(pages)} 页｜{total} 字（含空格）｜{args.grid_style}｜{args.order}"
+          + (f"｜{bishun_tag}" if bishun_tag else ""))
     print(f"   字体：{font_family}")
     if args.pdf:
         if args.pdf_engine == "reportlab":
@@ -1482,7 +1811,7 @@ def main():
                 grid_color=args.grid_color, guide_color=args.guide_color,
                 order=args.order, title=(args.title if top_title or title_w > 0 else None),
                 top_title=top_title, char_pt=char_pt, pinyin_pt=pinyin_pt,
-                pen_color=color, font_path=font_path)
+                pen_color=color, font_path=font_path, glyphs=glyphs)
             print(f"🧾 已用 reportlab 纯 Python 导出 PDF：{pdf_abs}")
         else:
             export_pdf(out_abs, os.path.dirname(out_abs), font_path,

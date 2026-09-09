@@ -12,6 +12,7 @@
 - **内容随意换**：诗词、课文、生字、姓名……放进 txt，一条命令重新生成
 - **多种格子**：米字格 / 田字格 / 方框 / 回宫格 / 九宫格 / 四线三格（拼音·英文）/ 控笔训练格（横线·竖线·斜线·圆圈·波浪）
 - **拼音标注**（`--pinyin`）：每个汉字上方自动标带声调拼音，多音字按词语智能识别（低年级用）
+- **笔顺字帖**（`--bishun`）：`number` 整字标红圈笔顺编号；`step` 逐笔分解描红（每字按笔画数占多格、最新一笔红色），数据来自开源 [makemeahanzi](https://github.com/skishore/makemeahanzi)
 - **A4 / A5 / B5**，横排（现代）/ 竖排（传统从右往左）
 - **缺字检测**：生成前自动检查所选字体是否覆盖内容里的字，缺字提前警告，避免打印出方框
 - **两种 PDF 引擎**：`--pdf-engine reportlab` 纯 Python 直出 PDF（免装 Office、跨平台一致、秒出），
@@ -28,7 +29,7 @@
 需要 Python 3.9+：
 
 ```bash
-pip install -r requirements.txt   # python-docx / fonttools / pypinyin / reportlab
+pip install -r requirements.txt   # python-docx / fonttools / pypinyin / reportlab / svglib
 ```
 
 导出 PDF 二选一：默认引擎需要 Microsoft Word 或 LibreOffice（macOS：`brew install --cask libreoffice`）；
@@ -117,6 +118,7 @@ copy .env.example .env      # Windows
 | `--repeat 3` | 每个字连续写几遍 | 1 |
 | `--trace` | 浅灰色字，描红用 | 关 |
 | `--pinyin` | 每个汉字上方标带声调拼音（自动识别多音字） | 关 |
+| `--bishun number` | 笔顺：`number` 整字笔顺编号 / `step` 逐笔分解描红（首次自动下载约 29MB 笔画数据） | off |
 | `--grid-style jiugong` | `mizi` 米字格 / `tian` 田字格 / `box` 方框 / `huigong` 回宫格 / `jiugong` 九宫格 / `pinyin` 四线三格 / `kongbi` 控笔训练格 | mizi |
 | `--font "楷体"` | 字体名或关键词（见下） | STKaiti |
 | `--font-file xx.ttf` | 直接指定任意位置的字体文件（同样内嵌） | 无 |
@@ -188,10 +190,43 @@ python3 zitie.py pinyin.txt --grid-style pinyin --order horizontal --cell 12
 # 汉字上方自动标带声调拼音（低年级拼音字帖）
 python3 zitie.py content.txt --pinyin --order horizontal --pdf --pdf-engine reportlab
 
+# 笔顺字帖：整字标笔顺编号（适合认字 / 记笔顺）
+python3 zitie.py content.txt --bishun number --order horizontal --pdf --pdf-engine reportlab
+
+# 逐笔分解描红：每个字按笔画连续占格，第 k 格只画前 k 笔，最新一笔红色（适合初学）
+python3 zitie.py 生字.txt --bishun step --order horizontal --cell 18 --pdf --pdf-engine reportlab
+
+# 笔顺编号 + 拼音（低年级）
+python3 zitie.py 生字.txt --bishun number --pinyin --order horizontal --cell 20
+
+# 竖排笔顺字帖（传统从右往左，逐笔格自上而下）
+python3 zitie.py 生字.txt --bishun step --order vertical --cell 18
+
 # 纯 Python 直出 PDF：免装 Word/LibreOffice，跨平台一致、速度快
 python3 zitie.py content.txt --font "田英章硬笔楷书简体" --order horizontal \
     --pdf --pdf-engine reportlab
 ```
+
+## 笔顺字帖（`--bishun`）
+
+两种形态，数据来自开源项目 [makemeahanzi](https://github.com/skishore/makemeahanzi)（约 9000 通用汉字）：
+
+- **`--bishun number` 整字笔顺编号**：整字黑色，每笔起点标红圈白字序号（1、2、3……），适合认字、记笔顺
+- **`--bishun step` 逐笔分解描红**：一个字按笔画数连续占多个格子，第 k 格只显示前 k 笔，
+  **最新一笔红色**、旧笔黑色，适合零基础按笔顺描写；横排时同一个字不会被换行拆断
+
+```bash
+python3 zitie.py 生字.txt --bishun number --order horizontal --pdf --pdf-engine reportlab
+python3 zitie.py 生字.txt --bishun step   --order horizontal --cell 18 --pdf --pdf-engine reportlab
+```
+
+也可在 `.env` 里设 `ZITIE_BISHUN=number`（或 `step`）作为默认。笔画库未收录的生僻字会自动
+回退为普通字体显示并提前提示；`number` 可以和 `--pinyin` 同时使用（`step` 暂不支持拼音）。
+
+> **关于联网**：笔顺数据（`graphics.txt`，约 29MB）在**第一次使用 `--bishun` 时自动下载**
+> 到 `data/` 目录，之后离线可用；不用笔顺功能则完全不联网。下载失败时可手动下载
+> <https://raw.githubusercontent.com/skishore/makemeahanzi/master/graphics.txt>
+> 放到 `data/graphics.txt` 后重试。笔顺图缓存在 `data/cache/`，可随时删除。
 
 ## 说明与平台
 
@@ -204,7 +239,7 @@ python3 zitie.py content.txt --font "田英章硬笔楷书简体" --order horizo
 
 **需要联网或大模型 API key 吗？**
 不需要。完全本地运行，不调用任何 AI / 云服务，`pip install` 后离线可用。
-依赖均为本地库：`python-docx`（写 Word）、`fonttools`（缺字检测）、`pypinyin`（拼音）、`reportlab`（直出 PDF）。
+依赖均为本地库：`python-docx`（写 Word）、`fonttools`（缺字检测）、`pypinyin`（拼音）、`reportlab`（直出 PDF）、`svglib` + `pillow`（笔顺图）。唯一的联网动作：第一次用 `--bishun` 时下载约 29MB 开源笔画数据，之后离线可用。
 
 **Windows 双击 `zitie.bat` 闪退 / 提示找不到 python？**
 Python 没装好或没加入 PATH。重装 [Python](https://www.python.org/downloads/)，安装时**勾选 “Add Python to PATH”**，
@@ -233,6 +268,15 @@ Word 打开若仍回退字体，直接用 `--pdf` 导出的 PDF 打印最稳（�
 默认引擎（`auto`）才需要 Word 或 [LibreOffice](https://zh-cn.libreoffice.org/download/)；
 Windows 装了 LibreOffice 仍找不到时，在 `.env` 设
 `ZITIE_SOFFICE=C:\Program Files\LibreOffice\program\soffice.exe`。
+
+**`--bishun` 首次使用卡下载 / 公司网络下不了？**
+第一次用笔顺功能要下载约 29MB 数据到 `data/graphics.txt`，自动兼容系统根证书。
+下载失败时按提示手动下载该文件放进 `data/` 目录即可；换电脑把 `data/graphics.txt` 一起拷走就不用重新下载。
+生僻字笔画库没收录时会提示并自动用普通字体显示。
+
+**笔顺字和我选的书家字体不一样？**
+笔顺范字来自开源笔画库 makemeahanzi 的标准楷形，不是某个书家字体（任何字体都没有逐笔轮廓数据）；
+标题和没有笔顺数据的字仍用你选择的字体。
 
 **田英章 / 庞中华这些字体能用吗？收费吗？**
 个人练字：自行搜索下载 `.ttf` 放进 `fonts/` 即可，脚本会自动识别并内嵌。

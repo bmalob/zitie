@@ -20,3 +20,8 @@ __pycache__/
 
 # 本地配置（含本机路径/偏好，不入库；配置模板见 .env.example）
 .env
+
+# 笔顺数据（makemeahanzi，约 29MB，首次使用 --bishun 自动下载）与图片缓存
+data/graphics.txt
+data/graphics.txt.part
+data/cache/
