@@ -11,8 +11,11 @@
 
 - **内容随意换**：诗词、课文、生字、姓名……放进 txt，一条命令重新生成
 - **多种格子**：米字格 / 田字格 / 方框 / 回宫格 / 九宫格 / 四线三格（拼音·英文）/ 控笔训练格（横线·竖线·斜线·圆圈·波浪）
+- **拼音标注**（`--pinyin`）：每个汉字上方自动标带声调拼音，多音字按词语智能识别（低年级用）
 - **A4 / A5 / B5**，横排（现代）/ 竖排（传统从右往左）
 - **缺字检测**：生成前自动检查所选字体是否覆盖内容里的字，缺字提前警告，避免打印出方框
+- **两种 PDF 引擎**：`--pdf-engine reportlab` 纯 Python 直出 PDF（免装 Office、跨平台一致、秒出），
+  或默认自动调用 Word / LibreOffice 转换
 - **任意字体**：把 `.ttf` 放进 `fonts/` 即自动识别；田英章、庞中华等书家字体会**内嵌进 docx**，
   换电脑、发手机、去打印店都不回退字体
 - **常用排版**：标题逐字占格且居中、正文按句居中、描红（浅灰范字）、每字重复、范字后留空临写
@@ -25,10 +28,11 @@
 需要 Python 3.9+：
 
 ```bash
-pip install -r requirements.txt   # 只依赖 python-docx
+pip install -r requirements.txt   # python-docx / fonttools / pypinyin / reportlab
 ```
 
-可选（仅 `--pdf` 时需要）：Microsoft Word 或 LibreOffice（macOS：`brew install --cask libreoffice`）。
+导出 PDF 二选一：默认引擎需要 Microsoft Word 或 LibreOffice（macOS：`brew install --cask libreoffice`）；
+不想装 Office 就用 `--pdf-engine reportlab`，纯 Python 直出、无需任何 Office 软件。
 
 ### 一键脚本（推荐，三平台通用）
 
@@ -86,6 +90,8 @@ copy .env.example .env      # Windows
 | `ZITIE_MARGIN` | 页边距 mm | `14` |
 | `ZITIE_CHAR_SCALE` | 字占格比例 0~1 | `0.85` |
 | `ZITIE_PDF` | 是否同时导出 PDF：`true` / `false` | `true` |
+| `ZITIE_PDF_ENGINE` | PDF 引擎：`auto` / `word` / `libreoffice` / `reportlab`（纯 Python 直出） | `auto` |
+| `ZITIE_PINYIN` | 汉字上方自动标拼音：`true` / `false` | `false` |
 | `ZITIE_OUTPUT` | 输出文件名 | `字帖.docx` |
 | `ZITIE_FONTS_DIR` | 自定义字体目录（默认脚本下 `fonts/`） | `fonts` |
 | `ZITIE_SOFFICE` | LibreOffice 路径（自动检测不到时手动指定） | `C:\Program Files\LibreOffice\program\soffice.exe` |
@@ -110,6 +116,7 @@ copy .env.example .env      # Windows
 | `--blanks 2` | 每个字后留几个空格，临写用 | 0 |
 | `--repeat 3` | 每个字连续写几遍 | 1 |
 | `--trace` | 浅灰色字，描红用 | 关 |
+| `--pinyin` | 每个汉字上方标带声调拼音（自动识别多音字） | 关 |
 | `--grid-style jiugong` | `mizi` 米字格 / `tian` 田字格 / `box` 方框 / `huigong` 回宫格 / `jiugong` 九宫格 / `pinyin` 四线三格 / `kongbi` 控笔训练格 | mizi |
 | `--font "楷体"` | 字体名或关键词（见下） | STKaiti |
 | `--font-file xx.ttf` | 直接指定任意位置的字体文件（同样内嵌） | 无 |
@@ -119,6 +126,7 @@ copy .env.example .env      # Windows
 | `--margin 12` | 页边距（mm） | 14 |
 | `--char-scale 0.85` | 字占格子的比例 | 0.80 |
 | `--pdf` | 同时导出可打印 PDF | 关 |
+| `--pdf-engine reportlab` | `auto`(Word→LibreOffice，默认) / `reportlab` 纯 Python 直出 | auto |
 
 完整列表：`python3 zitie.py -h`
 
@@ -176,6 +184,13 @@ python3 zitie.py x --grid-style kongbi --pdf
 
 # 四线三格：拼音 / 英文字母（内容直接写字母，可带声调）
 python3 zitie.py pinyin.txt --grid-style pinyin --order horizontal --cell 12
+
+# 汉字上方自动标带声调拼音（低年级拼音字帖）
+python3 zitie.py content.txt --pinyin --order horizontal --pdf --pdf-engine reportlab
+
+# 纯 Python 直出 PDF：免装 Word/LibreOffice，跨平台一致、速度快
+python3 zitie.py content.txt --font "田英章硬笔楷书简体" --order horizontal \
+    --pdf --pdf-engine reportlab
 ```
 
 ## 说明与平台
@@ -188,7 +203,8 @@ python3 zitie.py pinyin.txt --grid-style pinyin --order horizontal --cell 12
 ## 常见问题 FAQ
 
 **需要联网或大模型 API key 吗？**
-不需要。完全本地运行，不调用任何 AI / 云服务，`pip install` 后离线可用；唯一第三方库是 `python-docx`。
+不需要。完全本地运行，不调用任何 AI / 云服务，`pip install` 后离线可用。
+依赖均为本地库：`python-docx`（写 Word）、`fonttools`（缺字检测）、`pypinyin`（拼音）、`reportlab`（直出 PDF）。
 
 **Windows 双击 `zitie.bat` 闪退 / 提示找不到 python？**
 Python 没装好或没加入 PATH。重装 [Python](https://www.python.org/downloads/)，安装时**勾选 “Add Python to PATH”**，
@@ -212,9 +228,10 @@ Python 没装好或没加入 PATH。重装 [Python](https://www.python.org/downl
 书家字体要先把 `.ttf` 放进 `fonts/`，并用 `--font 字体名关键词` 选择；
 Word 打开若仍回退字体，直接用 `--pdf` 导出的 PDF 打印最稳（字体已内嵌）。
 
-**没有生成 PDF？**
-导出 PDF 需要安装 Word 或 [LibreOffice](https://zh-cn.libreoffice.org/download/)；不装也会正常生成 `.docx`。
-Windows 装了 LibreOffice 仍找不到时，在 `.env` 里设置
+**没有生成 PDF / 不想装 Office？**
+用 `--pdf-engine reportlab` 即可纯 Python 直出 PDF，无需 Word/LibreOffice、跨平台一致、速度快。
+默认引擎（`auto`）才需要 Word 或 [LibreOffice](https://zh-cn.libreoffice.org/download/)；
+Windows 装了 LibreOffice 仍找不到时，在 `.env` 设
 `ZITIE_SOFFICE=C:\Program Files\LibreOffice\program\soffice.exe`。
 
 **田英章 / 庞中华这些字体能用吗？收费吗？**

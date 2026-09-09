@@ -19,6 +19,8 @@
   --grid-style huigong      格子：mizi 米字格(默认) / tian 田字格 / box 方框 /
                             huigong 回宫格 / jiugong 九宫格 /
                             pinyin 四线三格(拼音英文) / kongbi 控笔训练格
+  --pinyin                  每个汉字上方自动标带声调拼音
+  --pdf --pdf-engine reportlab  纯 Python 直出 PDF（免装 Office）
   --font "楷体"            换字体（Windows 用楷体，Mac 默认华文楷体）
 完整参数见 python3 zitie.py -h
 """
@@ -522,7 +524,7 @@ def _export_pdf_word(docx_abs, pdf_abs):
     return os.path.isfile(pdf_abs)
 
 
-def export_pdf(docx_path, outdir, font_path=None):
+def export_pdf(docx_path, outdir, font_path=None, prefer="auto"):
     """导出可直接打印的 PDF。优先用 Microsoft Word（内嵌字体/横版渲染最准），
     没有 Word 再退回 LibreOffice（会把所需字体置入其 profile，避免回退）。"""
     docx_abs = os.path.abspath(docx_path)
@@ -531,7 +533,7 @@ def export_pdf(docx_path, outdir, font_path=None):
     if os.path.isfile(pdf_abs):
         os.remove(pdf_abs)
 
-    if _export_pdf_word(docx_abs, pdf_abs):
+    if prefer != "libreoffice" and _export_pdf_word(docx_abs, pdf_abs):
         print(f"🧾 已用 Microsoft Word 导出可直接打印的 PDF：{pdf_abs}")
         return
 
@@ -555,6 +557,138 @@ def export_pdf(docx_path, outdir, font_path=None):
         print(f"🧾 已用 LibreOffice 导出可直接打印的 PDF：{pdf_abs}")
     else:
         print("⚠️  PDF 导出失败，但 docx 已正常生成，可直接用 Word 打开打印。")
+
+
+PDF_FONT_NAME = "ZTFONT"
+
+
+def _hex_rgb(value):
+    h = (value or "000000").lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
+def _register_pdf_font(font_path):
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont, TTFError
+    try:
+        pdfmetrics.registerFont(TTFont(PDF_FONT_NAME, font_path, subfontIndex=0))
+    except (TTFError, TypeError):
+        pdfmetrics.registerFont(TTFont(PDF_FONT_NAME, font_path))
+    return PDF_FONT_NAME
+
+
+def export_pdf_reportlab(pdf_path, pages, *, page_w, page_h, m, title_w, cell,
+                         cols, rows, style, grid_color, guide_color, order,
+                         title, top_title, char_pt, pinyin_pt, pen_color, font_path):
+    """纯 Python 直接画 PDF（reportlab），不依赖 Word/LibreOffice，跨平台渲染一致。"""
+    from reportlab.pdfgen import canvas
+    from reportlab.pdfbase import pdfmetrics
+    if not font_path or not os.path.isfile(font_path):
+        sys.exit("reportlab 直出需要可用的字体文件，请改用 --font wenkai（霞鹜文楷，已随附）"
+                 "或用 --font-file 指定字体；也可以去掉 --pdf-engine 用 Word/LibreOffice 导出。")
+    PT = mm_pt(1.0)
+    W, H = page_w * PT, page_h * PT
+    font = _register_pdf_font(font_path)
+    cv = canvas.Canvas(pdf_path, pagesize=(W, H))
+    cv.setTitle("字帖")
+
+    def X(mm):
+        return mm * PT
+
+    def Y(mm_top):                 # 页面顶部坐标 → PDF 底部坐标
+        return H - mm_top * PT
+
+    prims = grid_primitives(m["left"], m["top"], title_w, cell, cols, rows,
+                            style, grid_color, guide_color)
+    band = 1 if title_w > 0 else 0
+    ncols = cols + band
+    ink = _hex_rgb(pen_color)
+
+    def draw(cx_pt, cy_pt, s, size, center_y=None):
+        """以 (cx_pt, center_y 或 cy_pt) 为视觉中心写居中文字（按字体度量精确定位）。"""
+        cv.setFont(font, size)
+        cv.setFillColorRGB(*ink)
+        extent = pdfmetrics.getAscent(font, size) + pdfmetrics.getDescent(font, size)
+        baseline = (center_y if center_y is not None else cy_pt) - extent / 2
+        cv.drawCentredString(cx_pt, baseline, s)
+
+    def text(cx_mm, cy_mm, s, size):
+        draw(X(cx_mm), Y(cy_mm), s, size)
+
+    for cells in pages:
+        # 格子
+        cv.setLineCap(0)
+        for pr in prims:
+            kind = pr[0]
+            color = _hex_rgb(pr[5])
+            cv.setStrokeColorRGB(*color)
+            cv.setLineWidth(pr[6] * PT)
+            if pr[7]:
+                cv.setDash([1.1, 1.3])
+            else:
+                cv.setDash([])
+            if kind == "line":
+                _, x1, y1, x2, y2 = pr[:5]
+                cv.line(X(x1), Y(y1), X(x2), Y(y2))
+            else:
+                _, x, y, w, h = pr[:5]
+                if kind == "ellipse":
+                    cv.ellipse(X(x), Y(y + h), X(x + w), Y(y), stroke=1, fill=0)
+                else:
+                    cv.rect(X(x), Y(y + h), w * PT, h * PT, stroke=1, fill=0)
+        cv.setDash([])
+
+        # 竖排标题带（文字竖排堆叠居中）
+        if title_w > 0 and title:
+            tchars = [ch for ch in title if not ch.isspace()]
+            size = mm_pt(min(title_w, cell) * 0.68)
+            start_row = (rows - len(tchars)) / 2.0
+            for j, ch in enumerate(tchars):
+                cx = m["left"] + title_w / 2
+                cy = m["top"] + (start_row + j + 0.5) * cell
+                text(cx, cy, ch, size)
+
+        # 正文
+        for k, val in cells.items():
+            ch, py = val if isinstance(val, tuple) else (val, None)
+            if not ch:
+                continue
+            if order == "vertical":
+                r = k % rows
+                c = k // rows
+                table_col = ncols - 1 - c
+            else:
+                r = k // cols + (1 if top_title else 0)
+                c = k % cols
+                table_col = band + c
+            cx = m["left"] + title_w + table_col * cell + cell / 2
+            cy = m["top"] + r * cell + cell / 2
+            if py and pinyin_pt:
+                # 拼音在上、汉字在下，两行作为整体垂直居中
+                gap = pinyin_pt * 0.35
+                lh_ch = pdfmetrics.getAscent(font, char_pt) - pdfmetrics.getDescent(font, char_pt)
+                lh_py = pdfmetrics.getAscent(font, pinyin_pt) - pdfmetrics.getDescent(font, pinyin_pt)
+                cy_pt = Y(cy)
+                draw(X(cx), None, ch, char_pt, center_y=cy_pt - (lh_py + gap) / 2)
+                draw(X(cx), None, py, pinyin_pt, center_y=cy_pt + (lh_ch + gap) / 2)
+            else:
+                text(cx, cy, ch, char_pt)
+
+        # 横排顶部标题行（逐字占格居中）
+        if top_title and title:
+            tchars = [ch for ch in title if not ch.isspace()]
+            start = max(0, (ncols - len(tchars)) // 2)
+            for i, ch in enumerate(tchars):
+                col = start + i
+                if col < ncols:
+                    cx = m["left"] + title_w + col * cell + cell / 2
+                    cy = m["top"] + cell / 2
+                    text(cx, cy, ch, char_pt)
+
+        cv.showPage()
+    cv.save()
 
 
 def mm_twip(mm):
@@ -603,6 +737,29 @@ def find_missing_chars(font_path, chars):
     return missing
 
 
+def annotate_pinyin(clauses):
+    """给每条 clause 的汉字注上带声调拼音（按整句识别多音字），返回与 clauses 对齐的拼音列表。
+    非汉字（字母等）不注音。需要 pypinyin。"""
+    try:
+        from pypinyin import pinyin, Style
+    except ImportError:
+        sys.exit("拼音标注需要 pypinyin，请先安装：pip install pypinyin")
+    out = []
+    for cl in clauses:
+        readings = [w[0] for w in pinyin("".join(cl), style=Style.TONE,
+                                         heteronym=False, errors="ignore")]
+        # errors=ignore 会丢掉非汉字条目，按汉字位置重新对齐
+        py, ri = [], 0
+        for ch in cl:
+            if CJK_RE.match(ch) and ri < len(readings):
+                py.append(readings[ri])
+                ri += 1
+            else:
+                py.append(None)
+        out.append(py)
+    return out
+
+
 def build_items(clauses, repeat, blanks):
     """展开成单元格流：字符 / None(空格) / 'BREAK'(换列或换行)。"""
     items = []
@@ -616,14 +773,32 @@ def build_items(clauses, repeat, blanks):
     return items
 
 
-def paginate(items, cols, rows, order, top_rows=0):
+def build_pinyin_stream(clauses_py, repeat, blanks):
+    """与 build_items 完全对齐的拼音流：汉字带拼音 / None 空格 / 'BREAK'。"""
+    stream = []
+    for py in clauses_py:
+        for reading in py:
+            stream.extend([reading] * max(1, repeat))
+            stream.extend([None] * blanks)
+        stream.append("BREAK")
+    if stream and stream[-1] == "BREAK":
+        stream.pop()
+    return stream
+
+
+def paginate(items, cols, rows, order, top_rows=0, py_items=None):
+    """返回 pages：{单元格序号: (字, 拼音或None)}。"""
+    def pack(it, idx):
+        py = py_items[idx] if py_items is not None else None
+        return it, (py if it else None)
+
     if order == "vertical":
         # 竖排：按列从右往左填充
         capacity = cols * rows
         step = rows
         pages = [{}]
         cursor = 0
-        for item in items:
+        for idx, item in enumerate(items):
             if item == "BREAK":
                 if cursor % step:
                     cursor = ((cursor // step) + 1) * step
@@ -631,13 +806,14 @@ def paginate(items, cols, rows, order, top_rows=0):
             page_idx = cursor // capacity
             while len(pages) <= page_idx:
                 pages.append({})
-            pages[page_idx][cursor % capacity] = item
+            pages[page_idx][cursor % capacity] = pack(item, idx)
             cursor += 1
         return pages
 
     # 横排：每句占一行（超长自动换行），每一行在格子里水平居中
     eff_rows = rows - top_rows
     clauses, cur = [], []
+    clause_py, curpy = [], []
     for it in items:
         if it == "BREAK":
             clauses.append(cur)
@@ -646,12 +822,23 @@ def paginate(items, cols, rows, order, top_rows=0):
             cur.append(it)
     if cur:
         clauses.append(cur)
+    if py_items is not None:
+        for py in py_items:
+            if py == "BREAK":
+                clause_py.append(curpy)
+                curpy = []
+            else:
+                curpy.append(py)
+        if curpy:
+            clause_py.append(curpy)
 
     pages = [{}]
     row = 0
-    for cl in clauses:
+    for ci, cl in enumerate(clauses):
+        pylist = clause_py[ci] if clause_py else [None] * len(cl)
         last = max((i for i, ch in enumerate(cl) if ch), default=-1)
         seg = cl[:last + 1]            # 去掉句尾空白
+        segpy = pylist[:last + 1]
         L = len(seg)
         nrows = max(1, math.ceil(L / cols))
         if row + nrows > eff_rows:     # 当前页放不下，换页
@@ -659,11 +846,12 @@ def paginate(items, cols, rows, order, top_rows=0):
             row = 0
         for r in range(nrows):
             part = seg[r * cols:(r + 1) * cols]
+            partpy = segpy[r * cols:(r + 1) * cols]
             plen = len(part)
             start = (cols - plen) // 2 if plen < cols else 0
             for i, ch in enumerate(part):
                 if ch:
-                    pages[-1][(row + r) * cols + start + i] = ch
+                    pages[-1][(row + r) * cols + start + i] = (ch, partpy[i])
         row += nrows
     return pages
 
@@ -711,7 +899,7 @@ def setup_table(tbl, widths_mm):
     tbl._tbl.insert(list(tbl._tbl).index(tblPr) + 1, grid)
 
 
-def setup_cell(cell, width_mm, height_mm):
+def setup_cell(cell, width_mm, height_mm, two_line=False):
     tcPr = cell._tc.get_or_add_tcPr()
     for tag in ("w:tcW", "w:vAlign"):
         _remove(tcPr, tag)
@@ -729,16 +917,20 @@ def setup_cell(cell, width_mm, height_mm):
     spacing = OxmlElement("w:spacing")
     spacing.set(qn("w:before"), "0")
     spacing.set(qn("w:after"), "0")
-    spacing.set(qn("w:line"), str(mm_twip(height_mm)))
-    spacing.set(qn("w:lineRule"), "exact")
+    if two_line:
+        # 拼音 + 汉字两行：自动行距，垂直居中整体居中
+        spacing.set(qn("w:line"), "240")
+        spacing.set(qn("w:lineRule"), "auto")
+    else:
+        spacing.set(qn("w:line"), str(mm_twip(height_mm)))
+        spacing.set(qn("w:lineRule"), "exact")
     pPr.append(spacing)
     jc = OxmlElement("w:jc")
     jc.set(qn("w:val"), "center")
     pPr.append(jc)
 
 
-def write_char(cell, ch, font, font_pt, color):
-    run = cell.paragraphs[0].add_run(ch)
+def _style_run(run, font, font_pt, color):
     rPr = run._r.get_or_add_rPr()
     rFonts = OxmlElement("w:rFonts")
     rFonts.set(qn("w:hint"), "eastAsia")
@@ -756,6 +948,16 @@ def write_char(cell, ch, font, font_pt, color):
     szCs = OxmlElement("w:szCs")
     szCs.set(qn("w:val"), sz_val)
     rPr.append(szCs)
+
+
+def write_char(cell, ch, font, font_pt, color, pinyin=None, pinyin_pt=None):
+    if pinyin:
+        py_run = cell.paragraphs[0].add_run(pinyin)
+        _style_run(py_run, font, pinyin_pt, color)
+        br = cell.paragraphs[0].add_run()
+        br._r.append(OxmlElement("w:br"))
+    run = cell.paragraphs[0].add_run(ch)
+    _style_run(run, font, font_pt, color)
 
 
 def _anchor_open(shape_id, x_mm, y_mm, w_mm, h_mm, behind):
@@ -783,18 +985,17 @@ ANCHOR_CLOSE = '''</wps:spPr><wps:bodyPr/></wps:wsp>
 </wp:anchor></w:drawing>'''
 
 
-def dml_line(shape_id, x1, y1, x2, y2, color, weight_mm, dash=False, rot=False, flip=False):
+def dml_line(shape_id, x1, y1, x2, y2, color, weight_mm, dash=False, rot=False):
     """页面绝对定位直线（放页眉，每页重复，压在文字下方）。"""
     color = color.lstrip("#")
     ox, oy = min(x1, x2), min(y1, y2)
     w = max(abs(x2 - x1), 0.01)
     h = max(abs(y2 - y1), 0.01)
     rot_attr = ' rot="5400000"' if rot else ""
-    flip_attr = ' flipH="1"' if flip else ""
     dash_el = '<a:prstDash val="dash"/>' if dash else ""
     w_emu = int(weight_mm * MM_TO_EMU)
     body = f'''
-<a:xfrm{rot_attr}{flip_attr}><a:off x="0" y="0"/><a:ext cx="{int(w * MM_TO_EMU)}" cy="{int(h * MM_TO_EMU)}"/></a:xfrm>
+<a:xfrm{rot_attr}><a:off x="0" y="0"/><a:ext cx="{int(w * MM_TO_EMU)}" cy="{int(h * MM_TO_EMU)}"/></a:xfrm>
 <a:prstGeom prst="line"><a:avLst/></a:prstGeom>
 <a:ln w="{w_emu}" cap="flat"><a:solidFill><a:srgbClr val="{color}"/></a:solidFill>{dash_el}</a:ln>'''
     return _anchor_open(shape_id, ox, oy, w, h, behind=True) + body + ANCHOR_CLOSE
@@ -846,58 +1047,55 @@ def dml_title_chars(shape_id_start, text, x0, y0, band_w, grid_h, font, color="0
     return frags
 
 
-def build_grid_shapes(x0, y0, title_w, cell, cols, rows, style,
-                      grid_color, guide_color, top_rows=0):
-    """生成格子辅助线。支持：
-    mizi 米字格 / tian 田字格 / box 方框 / huigong 回宫格 / jiugong 九宫格 /
-    pinyin 四线三格（拼音/英文）/ kongbi 控笔训练格。"""
-    frags = []
-    sid = [1]
+def grid_primitives(x0, y0, title_w, cell, cols, rows, style,
+                    grid_color, guide_color, top_rows=0):
+    """生成格子图元（坐标单位 mm，原点在页面左上）。两种渲染器（Word/PDF）共用：
+    ('line', x1,y1,x2,y2,color,weight,dash)  ('rect'|'ellipse', x,y,w,h,...)。
+    支持 mizi/tian/box/huigong/jiugong/pinyin/kongbi。"""
+    p = []
 
-    def L(x1, y1, x2, y2, color, weight, dash=False, rot=False, flip=False):
-        frags.append(dml_line(sid[0], x1, y1, x2, y2, color, weight, dash, rot, flip))
-        sid[0] += 1
+    def L(x1, y1, x2, y2, color, weight, dash=False):
+        p.append(("line", x1, y1, x2, y2, color, weight, dash))
 
-    def S(x, y, w, h, prst, color, weight, dash=False):
-        frags.append(dml_shape(sid[0], x, y, w, h, prst, color, weight, dash))
-        sid[0] += 1
+    def S(x, y, w, h, kind, color, weight, dash=False):
+        p.append((kind, x, y, w, h, color, weight, dash))
 
     tw = title_w
     gx = x0 + tw
-    total_w = tw + cols * cell
     total_h = rows * cell
     border = 0.16
     guide = 0.09
-
     gw = cols * cell
 
-    # ── 四线三格（拼音 / 英文）：连续横排四条线三格，只画左右外边框，无竖向分格 ──
+    # ── 四线三格（拼音 / 英文）：连续四条线三格，只画左右外边框 ──
     if style == "pinyin":
         L(gx, y0, gx, y0 + total_h, grid_color, border)
         L(gx + gw, y0, gx + gw, y0 + total_h, grid_color, border)
-        for k in range(0, 3 * rows + 1):           # 每格高 1 行，内含 3 个小格
+        for k in range(0, 3 * rows + 1):
             y = y0 + k * cell / 3.0
-            if k % 3 == 0:                         # 上/下主线实线
+            if k % 3 == 0:
                 L(gx, y, gx + gw, y, grid_color, border)
-            else:                                  # 中间两条虚线
+            else:
                 L(gx, y, gx + gw, y, guide_color, guide, dash=True)
-        return frags, sid[0]
+        return p
 
-    # ── 方形格：外边框矩阵（逐段短线，兼容个别渲染器）──
-    xs = [gx]
-    for k in range(1, cols + 1):
-        xs.append(gx + k * cell)
+    # ── 方形格外边框矩阵（逐段短线，兼容个别渲染器）──
+    # 竖排标题带（tw>0）：只在顶/底封口，带内不画横线，保持干净竖条
+    band_xs = [x0, gx] if tw > 0 else []
+    xs = band_xs + [gx + k * cell for k in range(cols + 1)]
     for k in range(rows + 1):
         y = y0 + k * cell
-        for a, b in zip(xs, xs[1:]):
+        segs = list(zip(xs, xs[1:]))
+        if tw > 0 and 0 < k < rows:
+            segs = segs[1:]
+        for a, b in segs:
             L(a, y, b, y, grid_color, border)
     for x in xs:
         L(x, y0, x, y0 + total_h, grid_color, border)
 
     if style == "box":
-        return frags, sid[0]
+        return p
 
-    # ── 回宫格：外框 + 居中内框（虚线，约格的 2/3）──
     if style == "huigong":
         inset = cell * 0.17
         for i in range(cols):
@@ -905,9 +1103,8 @@ def build_grid_shapes(x0, y0, title_w, cell, cols, rows, style,
                 S(gx + i * cell + inset, y0 + j * cell + inset,
                   cell - 2 * inset, cell - 2 * inset, "rect",
                   guide_color, guide, dash=True)
-        return frags, sid[0]
+        return p
 
-    # ── 九宫格：每格再用虚线三等分（2 竖 2 横）──
     if style == "jiugong":
         for i in range(cols):
             for j in range(rows):
@@ -917,11 +1114,9 @@ def build_grid_shapes(x0, y0, title_w, cell, cols, rows, style,
                       guide_color, guide, dash=True)
                     L(cx0, cy0 + cell * t, cx0 + cell, cy0 + cell * t,
                       guide_color, guide, dash=True)
-        return frags, sid[0]
+        return p
 
-    # ── 控笔训练格：每格循环 横线 / 竖线 / 斜线 / 圆圈 / 波浪（浅虚线，描写用）──
     if style == "kongbi":
-        import math as _m
         pats = ["hline", "vline", "diag", "circle", "wave"]
         for j in range(rows):
             for i in range(cols):
@@ -937,25 +1132,23 @@ def build_grid_shapes(x0, y0, title_w, cell, cols, rows, style,
                         L(cx0 + cell * t, cy0 + cell * 0.12, cx0 + cell * t,
                           cy0 + cell * 0.88, c, guide, dash=True)
                 elif pat == "diag":
-                    L(cx0, cy0, cx0 + cell, cy0 + cell,
-                      c, guide, dash=True)                      # \ （格角到格角）
-                    L(cx0, cy0, cx0 + cell, cy0 + cell,
-                      c, guide, dash=True, rot=True)            # /
+                    L(cx0, cy0, cx0 + cell, cy0 + cell, c, guide, dash=True)   # \
+                    L(cx0, cy0 + cell, cx0 + cell, cy0, c, guide, dash=True)  # /
                 elif pat == "circle":
                     r = cell * 0.26
                     S(cx0 + cell / 2 - r, cy0 + cell / 2 - r, 2 * r, 2 * r,
                       "ellipse", c, guide, dash=True)
                 elif pat == "wave":
-                    pts = []
                     n = 14
+                    pts = []
                     for s in range(n + 1):
                         t = s / n
-                        px = cx0 + cell * (0.12 + 0.76 * t)
-                        py = cy0 + cell * 0.5 + cell * 0.22 * _m.sin(t * 2 * _m.pi * 2)
-                        pts.append((px, py))
+                        pts.append((cx0 + cell * (0.12 + 0.76 * t),
+                                    cy0 + cell * 0.5 + cell * 0.22
+                                    * math.sin(t * 2 * math.pi * 2)))
                     for (a1, a2), (b1, b2) in zip(pts, pts[1:]):
                         L(a1, a2, b1, b2, c, guide, dash=True)
-        return frags, sid[0]
+        return p
 
     # ── 田字格 / 米字格：中虚线（米字再加对角线）──
     for i in range(cols):
@@ -966,15 +1159,36 @@ def build_grid_shapes(x0, y0, title_w, cell, cols, rows, style,
         for i in range(cols):
             cx0 = gx + i * cell
             L(cx0, my, cx0 + cell, my, guide_color, guide, dash=True)
-
     if style == "mizi":
         for i in range(cols):
             for j in range(rows):
-                cx0 = gx + i * cell
-                cy0 = y0 + j * cell
+                cx0, cy0 = gx + i * cell, y0 + j * cell
                 L(cx0, cy0, cx0 + cell, cy0 + cell, guide_color, guide, dash=True)
-                L(cx0, cy0, cx0 + cell, cy0 + cell, guide_color, guide, dash=True, rot=True)
-    return frags, sid[0]
+                L(cx0, cy0 + cell, cx0 + cell, cy0, guide_color, guide, dash=True)
+    return p
+
+
+def build_grid_shapes(x0, y0, title_w, cell, cols, rows, style,
+                      grid_color, guide_color, top_rows=0):
+    """把 grid_primitives 转成 Word（DrawingML，放页眉）形状。"""
+    prims = grid_primitives(x0, y0, title_w, cell, cols, rows, style,
+                            grid_color, guide_color, top_rows)
+    frags = []
+    for sid, pr in enumerate(prims, start=1):
+        kind = pr[0]
+        if kind == "line":
+            _, x1, y1, x2, y2, color, weight, dash = pr
+            if (x2 - x1) * (y2 - y1) < 0:          # “/” 斜线：用旋转的 \ 表示
+                frags.append(dml_line(sid, min(x1, x2), min(y1, y2),
+                                      max(x1, x2), max(y1, y2),
+                                      color, weight, dash, rot=True))
+            else:
+                frags.append(dml_line(sid, x1, y1, x2, y2, color, weight, dash))
+        else:
+            _, x, y, w, h, color, weight, dash = pr
+            prst = "ellipse" if kind == "ellipse" else "rect"
+            frags.append(dml_shape(sid, x, y, w, h, prst, color, weight, dash))
+    return frags, len(prims) + 1
 
 
 def add_header_grid(doc, frags):
@@ -1029,7 +1243,7 @@ def add_section_break(doc, header_part, page_w, page_h, m):
 
 
 def build_page(doc, cells, cols, rows, cell_mm, title_w, font,
-               char_pt, color, order, title=None, top_rows=0):
+               char_pt, color, order, title=None, top_rows=0, pinyin_pt=0.0):
     band = 1 if title_w > 0 else 0
     ncols = cols + band
     tbl = doc.add_table(rows=rows, cols=ncols)
@@ -1044,7 +1258,8 @@ def build_page(doc, cells, cols, rows, cell_mm, title_w, font,
         trH.set(qn("w:hRule"), "exact")
         trPr.append(trH)
         for i in range(ncols):
-            setup_cell(tbl.cell(j, i), widths[i], cell_mm)
+            setup_cell(tbl.cell(j, i), widths[i], cell_mm,
+                       two_line=(pinyin_pt > 0 and j >= top_rows))
 
     # 顶部标题行（横排标准字帖）：标题每个字写进田/米字格，整行居中
     if top_rows and title:
@@ -1055,7 +1270,8 @@ def build_page(doc, cells, cols, rows, cell_mm, title_w, font,
             if col < ncols:
                 write_char(tbl.cell(0, col), ch, font, char_pt, color)
 
-    for k, ch in cells.items():
+    for k, val in cells.items():
+        ch, py = val if isinstance(val, tuple) else (val, None)
         if not ch:
             continue
         if order == "vertical":
@@ -1066,7 +1282,8 @@ def build_page(doc, cells, cols, rows, cell_mm, title_w, font,
             r = k // cols + top_rows
             c = k % cols
             table_col = band + c
-        write_char(tbl.cell(r, table_col), ch, font, char_pt, color)
+        write_char(tbl.cell(r, table_col), ch, font, char_pt, color,
+                   pinyin=py, pinyin_pt=pinyin_pt or None)
 
     # 竖排时的标题由页眉文本框输出；横排顶部标题已在首行合并单元格中处理
 
@@ -1094,6 +1311,10 @@ def main():
                     help="字体文件路径（.ttf/.otf/.ttc），自动识别字体名并安装；优先级高于 --font")
     ap.add_argument("--pdf", action="store_true",
                     help="同时导出 PDF（字体内嵌，适合发打印店/手机）")
+    ap.add_argument("--pdf-engine", choices=["auto", "word", "libreoffice", "reportlab"],
+                    default="auto",
+                    help="PDF 引擎：auto 优先 Word 再 LibreOffice（默认）；"
+                         "reportlab 纯 Python 直出，免装 Office、跨平台一致")
     ap.add_argument("--char-scale", type=float, default=0.80, help="字占格比例（默认 0.80）")
     ap.add_argument("--order", choices=["vertical", "horizontal"], default="vertical",
                     help="vertical 竖排从右往左（默认）/ horizontal 横排")
@@ -1105,6 +1326,8 @@ def main():
     ap.add_argument("--repeat", type=int, default=1, help="每字重复次数")
     ap.add_argument("--blanks", type=int, default=0, help="每字后留空字数")
     ap.add_argument("--trace", action="store_true", help="描红：浅灰色字")
+    ap.add_argument("--pinyin", action="store_true",
+                    help="汉字上方自动标注带声调拼音（低年级用）")
     ap.add_argument("--pen-color", default=None,
                     help="范字颜色（十六进制，如 808080 灰色让笔迹更细淡；默认黑色）")
     ap.add_argument("--keep-punct", action="store_true", help="标点也占格")
@@ -1127,6 +1350,8 @@ def main():
         margin=env_float(env, "ZITIE_MARGIN", 14.0),
         char_scale=env_float(env, "ZITIE_CHAR_SCALE", 0.80),
         pdf=env_bool(env, "ZITIE_PDF", False),
+        pinyin=env_bool(env, "ZITIE_PINYIN", False),
+        pdf_engine=env.get("ZITIE_PDF_ENGINE", "auto"),
     )
     args = ap.parse_args()
 
@@ -1138,12 +1363,16 @@ def main():
 
     if args.grid_style == "kongbi":
         # 控笔训练格：纯运笔练习，不需要文字内容
-        clauses, items = [], []
+        clauses, items, py_items = [], [], None
     else:
         clauses = read_clauses(args.source, args.keep_punct)
         if not clauses:
             sys.exit("没有可写入的汉字，请检查内容。")
         items = build_items(clauses, args.repeat, args.blanks)
+        py_items = None
+        if args.pinyin:
+            clauses_py = annotate_pinyin(clauses)
+            py_items = build_pinyin_stream(clauses_py, args.repeat, args.blanks)
 
     # 缺字检测：所选字体不覆盖某些字时提前警告，避免打印出方框
     all_chars = [it for it in items if isinstance(it, str) and it != "BREAK"]
@@ -1186,6 +1415,11 @@ def main():
     if args.grid_style == "pinyin":
         # 拼音/英文：字母以四格三线的中格为准，整体调小，落在三格内
         char_scale = args.char_scale * 0.72
+    pinyin_pt = 0.0
+    if args.pinyin:
+        # 上方拼音 + 下方汉字两行布局，汉字收小留出拼音位置
+        char_scale = args.char_scale * 0.62
+        pinyin_pt = mm_pt(cell) * 0.30
     char_pt = mm_pt(cell) * char_scale
     if args.trace:
         color = "#D9D9D9"
@@ -1215,11 +1449,12 @@ def main():
                                      cell, rows))
     add_header_grid(doc, frags)
 
-    pages = paginate(items, cols, rows, args.order, top_rows)
+    pages = paginate(items, cols, rows, args.order, top_rows, py_items)
     for idx, cells in enumerate(pages):
         build_page(doc, cells, cols, rows, cell, title_w,
                   font_family, char_pt, color, args.order,
-                  title=args.title if top_title else None, top_rows=top_rows)
+                  title=args.title if top_title else None, top_rows=top_rows,
+                  pinyin_pt=pinyin_pt)
         if idx < len(pages) - 1:
             add_section_break(doc, doc.sections[0].header.part, page_w, page_h, m)
 
@@ -1238,7 +1473,20 @@ def main():
           f"｜{len(pages)} 页｜{total} 字（含空格）｜{args.grid_style}｜{args.order}")
     print(f"   字体：{font_family}")
     if args.pdf:
-        export_pdf(out_abs, os.path.dirname(out_abs), font_path)
+        if args.pdf_engine == "reportlab":
+            pdf_abs = os.path.splitext(out_abs)[0] + ".pdf"
+            export_pdf_reportlab(
+                pdf_abs, pages,
+                page_w=page_w, page_h=page_h, m=m, title_w=title_w, cell=cell,
+                cols=cols, rows=rows, style=args.grid_style,
+                grid_color=args.grid_color, guide_color=args.guide_color,
+                order=args.order, title=(args.title if top_title or title_w > 0 else None),
+                top_title=top_title, char_pt=char_pt, pinyin_pt=pinyin_pt,
+                pen_color=color, font_path=font_path)
+            print(f"🧾 已用 reportlab 纯 Python 导出 PDF：{pdf_abs}")
+        else:
+            export_pdf(out_abs, os.path.dirname(out_abs), font_path,
+                       prefer=args.pdf_engine)
 
 
 if __name__ == "__main__":
